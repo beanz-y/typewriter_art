@@ -1,7 +1,4 @@
-// src/engine/worker.js
-
 const DEFAULT_RAMP = "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. ".split('');
-const EDGE_CHARS = ['-', '|', '/', '\\', '(', ')', '[', ']', '{', '}', '<', '>', 'I', 'l', '1', '!', '?'];
 
 let stopFlag = false;
 
@@ -44,7 +41,7 @@ self.onmessage = async (e) => {
 
   if (type === 'START') {
     stopFlag = false;
-    const { imageData, maskData, width, height, params } = payload;
+    const { imageData, sourceBitmap, maskData, width, height, params } = payload;
     
     const scale = parseFloat(params.outputScale);
     const outW = Math.floor(width * scale);
@@ -55,23 +52,23 @@ self.onmessage = async (e) => {
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, outW, outH);
     
-    const fontSize = Math.floor(params.fontSize * scale);
-    ctx.font = `bold ${fontSize}px monospace`;
+    // Calculate two separate font sizes for the Detail mask
+    const baseFontSize = Math.floor(params.fontSize * scale);
+    const detailFontSize = Math.max(1, Math.floor(baseFontSize / 2));
+    
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    const activeRamp = calculateDensityMap(params.characterSet, fontSize);
-    const rampLen = activeRamp.length;
+    const baseRamp = calculateDensityMap(params.characterSet, baseFontSize);
+    const detailRamp = calculateDensityMap(params.characterSet, detailFontSize);
 
     const pixels = imageData.data;
     const grayData = new Float32Array(width * height);
     const gamma = params.gamma;
     
+    // Pre-calculate linear grayscale
     for (let i = 0; i < pixels.length; i += 4) {
-      const r = pixels[i];
-      const g = pixels[i+1];
-      const b = pixels[i+2];
-      let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      let lum = 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
       lum = 255 * Math.pow(lum / 255.0, 1.0 / gamma);
       grayData[i / 4] = lum;
     }
@@ -79,17 +76,15 @@ self.onmessage = async (e) => {
     const totalStrokes = params.totalStrokes;
     const updateInterval = 5000;
     let currentStroke = 0;
+    let activeFontSize = -1; // Used to prevent redundant font context switches
 
-    // --- NEW: Chunked rendering function ---
     const renderChunk = async () => {
-      // If STOP was clicked, send the final frame and exit immediately
       if (stopFlag) {
         const finalBitmap = await createImageBitmap(canvas);
         self.postMessage({ type: 'FINISHED', progress: currentStroke / totalStrokes, imageBitmap: finalBitmap }, [finalBitmap]);
         return;
       }
 
-      // Calculate how many strokes to do in this "chunk"
       const chunkLimit = Math.min(currentStroke + updateInterval, totalStrokes);
       
       for (; currentStroke < chunkLimit; currentStroke++) {
@@ -99,8 +94,17 @@ self.onmessage = async (e) => {
         const iy = Math.floor(ry);
         const idx = iy * width + ix;
 
+        // 1. Check Mask Intersections
+        let isDensityMasked = maskData.density && maskData.density.data[(idx * 4) + 3] > 100;
+        let isDetailMasked = maskData.detail && maskData.detail.data[(idx * 4) + 3] > 100;
+        let isColorMasked = maskData.color && maskData.color.data[(idx * 4) + 3] > 100;
+
+        // 2. Density Math
         let maskMult = 1.0;
-        if (maskData && maskData.data[(idx * 4) + 3] > 100) maskMult = 1.3;
+        if (maskData.density) {
+          // If density layer is used, make background sparse (5%) and masked area heavy (150%)
+          maskMult = isDensityMasked ? 1.5 : 0.05; 
+        }
 
         const pixelVal = grayData[idx];
         const darkness = (255.0 - pixelVal) / 255.0;
@@ -108,56 +112,89 @@ self.onmessage = async (e) => {
         strikeProb = Math.min(strikeProb, 0.85) * maskMult;
 
         if (Math.random() < strikeProb) {
+          // 3. Detail Math (Font Size Toggle)
+          const currentRamp = isDetailMasked ? detailRamp : baseRamp;
+          const rampLen = currentRamp.length;
+          const targetFontSize = isDetailMasked ? detailFontSize : baseFontSize;
+
+          // Micro-optimization: Only change canvas context if font size changed
+          if (targetFontSize !== activeFontSize) {
+            ctx.font = `bold ${targetFontSize}px monospace`;
+            activeFontSize = targetFontSize;
+          }
+
           const wearFactor = 1.0 - (Math.random() * params.ribbonWear);
           const currentAlpha = (params.inkOpacity / 255) * wearFactor;
           
           const targetIndex = Math.floor((1.0 - darkness) * (rampLen - 1));
           const finalIndex = Math.max(0, Math.min(rampLen - 1, targetIndex + Math.floor(Math.random() * 3 - 1)));
-          const char = activeRamp[finalIndex];
+          const char = currentRamp[finalIndex];
 
           const destX = rx * scale;
           const destY = ry * scale;
           
-          ctx.save();
-          ctx.translate(destX, destY);
-          ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
-          
+          // 4. Color Logic
+          let useColor = params.colorMode === 'Color';
+          if (params.colorMode === 'Masked Color') useColor = isColorMasked;
+
           const origR = pixels[idx * 4];
           const origG = pixels[idx * 4 + 1];
           const origB = pixels[idx * 4 + 2];
           
-          ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha})`;
+          if (useColor) {
+            ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha})`;
+          } else {
+            ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha})`;
+          }
+
+          ctx.save();
+          ctx.translate(destX, destY);
+          ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
           ctx.fillText(char, 0, 0);
 
           if (params.dirtyInk > 0 && Math.random() < (params.dirtyInk * 0.2)) {
             const ox = Math.random() * 2 - 1;
             const oy = Math.random() * 2 - 1;
-            ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha * 0.6})`;
+            if (useColor) ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha * 0.6})`;
+            else ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha * 0.6})`;
             ctx.fillText(char, ox, oy);
           }
           ctx.restore();
         }
       }
 
-      // Send the preview to the main thread
-      const bitmap = await createImageBitmap(canvas);
-      self.postMessage({ 
-        type: 'PROGRESS', 
-        progress: currentStroke / totalStrokes,
-        imageBitmap: bitmap 
-      }, [bitmap]);
+      // If we finished the loop
+      if (currentStroke >= totalStrokes) {
+        
+        // 5. Final Pass: Original Image Mask
+        if (maskData.original) {
+          // We use a temporary canvas to slice out the original image
+          const origCanvas = new OffscreenCanvas(outW, outH);
+          const oCtx = origCanvas.getContext('2d');
+          
+          // Draw full original photo (scaled to final output)
+          oCtx.drawImage(sourceBitmap, 0, 0, outW, outH);
+          
+          // Erase everything EXCEPT what is inside the mask
+          const origMaskBitmap = await createImageBitmap(maskData.original);
+          oCtx.globalCompositeOperation = 'destination-in';
+          oCtx.drawImage(origMaskBitmap, 0, 0, outW, outH);
+          
+          // Stamp the masked photo directly onto our typed canvas
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(origCanvas, 0, 0);
+        }
 
-      // If we haven't hit the total strokes, schedule the next chunk
-      if (currentStroke < totalStrokes) {
-        setTimeout(renderChunk, 0); 
-      } else {
-        // Send final finished signal
         const finalBitmap = await createImageBitmap(canvas);
         self.postMessage({ type: 'FINISHED', progress: 1.0, imageBitmap: finalBitmap }, [finalBitmap]);
+      } else {
+        // Send preview frame
+        const bitmap = await createImageBitmap(canvas);
+        self.postMessage({ type: 'PROGRESS', progress: currentStroke / totalStrokes, imageBitmap: bitmap }, [bitmap]);
+        setTimeout(renderChunk, 0); 
       }
     };
 
-    // Kick off the first chunk
     renderChunk();
   }
 };

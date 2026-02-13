@@ -110,7 +110,7 @@ export default function Sidebar({ processImageFile }) {
     store.updateMask(store.activeLayer, null);
   };
 
-  const toggleRender = () => {
+  const toggleRender = async () => { // <--- Note the added 'async'
     if (store.isRendering) {
       if (workerRef) workerRef.postMessage({ type: 'STOP' });
       return;
@@ -125,6 +125,24 @@ export default function Sidebar({ processImageFile }) {
     const ctx = extractCanvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(store.originalImage, 0, 0);
     const imageData = ctx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
+
+    // Helper to extract pixel data from active masks
+    const getMaskData = (layer) => {
+      const mask = store.masks[layer];
+      if (!mask) return null;
+      const mCtx = mask.getContext('2d', { willReadFrequently: true });
+      return mCtx.getImageData(0, 0, mask.width, mask.height);
+    };
+
+    const maskData = {
+      density: getMaskData('density'),
+      detail: getMaskData('detail'),
+      color: getMaskData('color'),
+      original: getMaskData('original')
+    };
+
+    // Pass the actual photo as a bitmap for ultra-fast rendering of the 'Original' mask
+    const sourceBitmap = await createImageBitmap(store.originalImage);
 
     const worker = new TypewriterWorker();
     setWorkerRef(worker);
@@ -144,11 +162,15 @@ export default function Sidebar({ processImageFile }) {
     worker.postMessage({
       type: 'START',
       payload: {
-        imageData, width: extractCanvas.width, height: extractCanvas.height,
+        imageData,
+        sourceBitmap,
+        maskData,
+        width: extractCanvas.width,
+        height: extractCanvas.height,
         params: {
           totalStrokes: store.totalStrokes, fontSize: store.fontSize, gamma: store.gamma,
           outputScale: store.outputScale, inkOpacity: store.inkOpacity, ribbonWear: store.ribbonWear,
-          dirtyInk: store.dirtyInk, characterSet: store.characterSet
+          dirtyInk: store.dirtyInk, characterSet: store.characterSet, colorMode: store.colorMode
         }
       }
     });
