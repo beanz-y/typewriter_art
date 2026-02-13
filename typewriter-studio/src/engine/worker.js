@@ -52,7 +52,6 @@ self.onmessage = async (e) => {
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, outW, outH);
     
-    // Calculate two separate font sizes for the Detail mask
     const baseFontSize = Math.floor(params.fontSize * scale);
     const detailFontSize = Math.max(1, Math.floor(baseFontSize / 2));
     
@@ -66,7 +65,6 @@ self.onmessage = async (e) => {
     const grayData = new Float32Array(width * height);
     const gamma = params.gamma;
     
-    // Pre-calculate linear grayscale
     for (let i = 0; i < pixels.length; i += 4) {
       let lum = 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
       lum = 255 * Math.pow(lum / 255.0, 1.0 / gamma);
@@ -76,7 +74,7 @@ self.onmessage = async (e) => {
     const totalStrokes = params.totalStrokes;
     const updateInterval = 5000;
     let currentStroke = 0;
-    let activeFontSize = -1; // Used to prevent redundant font context switches
+    let activeFontSize = -1; 
 
     const renderChunk = async () => {
       if (stopFlag) {
@@ -94,30 +92,31 @@ self.onmessage = async (e) => {
         const iy = Math.floor(ry);
         const idx = iy * width + ix;
 
-        // 1. Check Mask Intersections
         let isDensityMasked = maskData.density && maskData.density.data[(idx * 4) + 3] > 100;
         let isDetailMasked = maskData.detail && maskData.detail.data[(idx * 4) + 3] > 100;
         let isColorMasked = maskData.color && maskData.color.data[(idx * 4) + 3] > 100;
 
-        // 2. Density Math
+        // --- NEW: DENSITY MATH USING UI SLIDER ---
         let maskMult = 1.0;
         if (maskData.density) {
-          // If density layer is used, make background sparse (5%) and masked area heavy (150%)
-          maskMult = isDensityMasked ? 1.5 : 0.05; 
+          // If masked, multiply probability. If unmasked, divide it.
+          // Example slider at 5.0: Masked = 500% probability, Unmasked = 20% probability.
+          maskMult = isDensityMasked ? params.densityWeight : (1.0 / params.densityWeight); 
         }
 
         const pixelVal = grayData[idx];
         const darkness = (255.0 - pixelVal) / 255.0;
+        
         let strikeProb = Math.pow(darkness, 2.2);
-        strikeProb = Math.min(strikeProb, 0.85) * maskMult;
+        // Apply multiplier, but cap it so it doesn't break the random engine
+        strikeProb = Math.min(strikeProb * maskMult, 1.0); 
 
         if (Math.random() < strikeProb) {
-          // 3. Detail Math (Font Size Toggle)
+          
           const currentRamp = isDetailMasked ? detailRamp : baseRamp;
           const rampLen = currentRamp.length;
           const targetFontSize = isDetailMasked ? detailFontSize : baseFontSize;
 
-          // Micro-optimization: Only change canvas context if font size changed
           if (targetFontSize !== activeFontSize) {
             ctx.font = `bold ${targetFontSize}px monospace`;
             activeFontSize = targetFontSize;
@@ -130,10 +129,6 @@ self.onmessage = async (e) => {
           const finalIndex = Math.max(0, Math.min(rampLen - 1, targetIndex + Math.floor(Math.random() * 3 - 1)));
           const char = currentRamp[finalIndex];
 
-          const destX = rx * scale;
-          const destY = ry * scale;
-          
-          // 4. Color Logic
           let useColor = params.colorMode === 'Color';
           if (params.colorMode === 'Masked Color') useColor = isColorMasked;
 
@@ -147,40 +142,48 @@ self.onmessage = async (e) => {
             ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha})`;
           }
 
-          ctx.save();
-          ctx.translate(destX, destY);
-          ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
-          ctx.fillText(char, 0, 0);
+          const destX = rx * scale;
+          const destY = ry * scale;
 
-          if (params.dirtyInk > 0 && Math.random() < (params.dirtyInk * 0.2)) {
-            const ox = Math.random() * 2 - 1;
-            const oy = Math.random() * 2 - 1;
-            if (useColor) ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha * 0.6})`;
-            else ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha * 0.6})`;
-            ctx.fillText(char, ox, oy);
+          // --- NEW: DETAIL COMPENSATION LOOP ---
+          // Draw 3 clustered characters if in a detail zone to compensate for missing area
+          const drawCount = isDetailMasked ? 3 : 1; 
+          
+          for(let d = 0; d < drawCount; d++) {
+            ctx.save();
+            
+            // Add a small sub-pixel scatter to the extra strokes so they fill the space nicely
+            let offsetX = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
+            let offsetY = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
+            
+            ctx.translate(destX + offsetX, destY + offsetY);
+            ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
+            ctx.fillText(char, 0, 0);
+
+            // Apply dirty ink smudge individually to each printed character
+            if (params.dirtyInk > 0 && Math.random() < (params.dirtyInk * 0.2)) {
+              const ox = Math.random() * 2 - 1;
+              const oy = Math.random() * 2 - 1;
+              if (useColor) ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha * 0.6})`;
+              else ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha * 0.6})`;
+              ctx.fillText(char, ox, oy);
+            }
+            ctx.restore();
           }
-          ctx.restore();
         }
       }
 
-      // If we finished the loop
       if (currentStroke >= totalStrokes) {
-        
-        // 5. Final Pass: Original Image Mask
         if (maskData.original) {
-          // We use a temporary canvas to slice out the original image
           const origCanvas = new OffscreenCanvas(outW, outH);
           const oCtx = origCanvas.getContext('2d');
           
-          // Draw full original photo (scaled to final output)
           oCtx.drawImage(sourceBitmap, 0, 0, outW, outH);
           
-          // Erase everything EXCEPT what is inside the mask
           const origMaskBitmap = await createImageBitmap(maskData.original);
           oCtx.globalCompositeOperation = 'destination-in';
           oCtx.drawImage(origMaskBitmap, 0, 0, outW, outH);
           
-          // Stamp the masked photo directly onto our typed canvas
           ctx.globalCompositeOperation = 'source-over';
           ctx.drawImage(origCanvas, 0, 0);
         }
@@ -188,7 +191,6 @@ self.onmessage = async (e) => {
         const finalBitmap = await createImageBitmap(canvas);
         self.postMessage({ type: 'FINISHED', progress: 1.0, imageBitmap: finalBitmap }, [finalBitmap]);
       } else {
-        // Send preview frame
         const bitmap = await createImageBitmap(canvas);
         self.postMessage({ type: 'PROGRESS', progress: currentStroke / totalStrokes, imageBitmap: bitmap }, [bitmap]);
         setTimeout(renderChunk, 0); 

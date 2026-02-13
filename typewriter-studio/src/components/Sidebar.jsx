@@ -170,7 +170,8 @@ export default function Sidebar({ processImageFile }) {
         params: {
           totalStrokes: store.totalStrokes, fontSize: store.fontSize, gamma: store.gamma,
           outputScale: store.outputScale, inkOpacity: store.inkOpacity, ribbonWear: store.ribbonWear,
-          dirtyInk: store.dirtyInk, characterSet: store.characterSet, colorMode: store.colorMode
+          dirtyInk: store.dirtyInk, characterSet: store.characterSet, colorMode: store.colorMode,
+          densityWeight: store.densityWeight
         }
       }
     });
@@ -194,6 +195,7 @@ export default function Sidebar({ processImageFile }) {
           <div className="space-y-4">
             <ControlSlider label="Total Strokes" settingKey="totalStrokes" min={10000} max={1000000} step={10000} />
             <ControlSlider label="Base Font Size" settingKey="fontSize" min={8} max={40} step={1} />
+            <ControlSlider label="Density Focus" settingKey="densityWeight" min={1.0} max={10.0} step={0.5} tooltip="Controls how intensely the Density Mask hogs the strokes (1=None, 10=Extreme)" />
             <ControlSlider label="Gamma" settingKey="gamma" min={0.5} max={3.0} step={0.1} />
             <div className="flex gap-2 mb-4">
               <div className="flex-1">
