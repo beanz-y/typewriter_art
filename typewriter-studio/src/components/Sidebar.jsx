@@ -124,36 +124,33 @@ export default function Sidebar({ processImageFile }) {
     link.click();
   };
 
-  const exportGIF = async () => { // <--- Added async
+  const exportGIF = async () => {
     const liveFrames = useStore.getState().gifFrames;
     if (liveFrames.length === 0 || store.isGeneratingGif) return;
     
     store.setGeneratingGif(true);
-    store.updateSetting('progress', 0);
+    store.updateSetting('progress', 0); 
 
-    // FIX: Manually fetch the worker and create a Blob URL to bypass COEP security blocks
+    // Blob URL Fix for strict headers
     let workerUrl = '/gif.worker.js';
     try {
       const response = await fetch('/gif.worker.js');
       if (response.ok) {
         const workerBlob = await response.blob();
         workerUrl = URL.createObjectURL(workerBlob);
-      } else {
-        console.warn("Could not load local worker, falling back to path.");
       }
-    } catch (e) {
-      console.warn("Worker fetch failed:", e);
-    }
+    } catch (e) { console.warn("Worker fetch failed:", e); }
 
     const gif = new GIF({
       workers: 4, 
       quality: 20, 
-      workerScript: workerUrl, // Pass the in-memory Blob URL instead of the file path
+      workerScript: workerUrl,
       width: liveFrames[0].canvas.width,
       height: liveFrames[0].canvas.height
     });
 
     liveFrames.forEach((frame, index) => {
+      // Longer pause at the end (3000ms), fast playback (100ms) for the rest
       const delay = index === liveFrames.length - 1 ? 3000 : 100;
       gif.addFrame(frame.canvas, { delay, copy: true });
     });
@@ -170,11 +167,7 @@ export default function Sidebar({ processImageFile }) {
       
       store.setGeneratingGif(false);
       store.updateSetting('progress', 1.0);
-      
-      // Cleanup the Blob URL to free memory
-      if (workerUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(workerUrl);
-      }
+      if (workerUrl.startsWith('blob:')) URL.revokeObjectURL(workerUrl);
     });
 
     gif.render();
@@ -228,12 +221,30 @@ export default function Sidebar({ processImageFile }) {
           const currentFrames = useStore.getState().gifFrames;
           const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
 
-          // FIX: Standardize on 2% increments (50 frames) even for massive renders.
-          // This triples the GIF length for 10M stroke renders compared to before.
-          const captureThreshold = 0.02; 
+          // Capture Threshold: 2% (0.02) ensures we get ~50 frames regardless of total strokes.
+          const captureThreshold = 0.02;
 
           if (progress - lastSavedProgress >= captureThreshold || type === 'FINISHED') {
-            const gifScale = Math.min(1, 800 / imageBitmap.width);
+            
+            // --- NEW HIGH-RES GIF LOGIC ---
+            // Target width: 1200px (up from 800)
+            const MAX_GIF_WIDTH = 1200;
+            const MAX_GIF_PIXELS = 2000000; // ~1080p limit to prevent crashes
+
+            let gifScale = 1;
+            
+            // 1. Width Check
+            if (imageBitmap.width > MAX_GIF_WIDTH) {
+              gifScale = MAX_GIF_WIDTH / imageBitmap.width;
+            }
+
+            // 2. Total Pixel Count Check (Safety for tall images)
+            const potentialW = imageBitmap.width * gifScale;
+            const potentialH = imageBitmap.height * gifScale;
+            if ((potentialW * potentialH) > MAX_GIF_PIXELS) {
+               gifScale = Math.sqrt(MAX_GIF_PIXELS / (imageBitmap.width * imageBitmap.height));
+            }
+
             const gifW = Math.floor(imageBitmap.width * gifScale);
             const gifH = Math.floor(imageBitmap.height * gifScale);
             
@@ -398,7 +409,7 @@ export default function Sidebar({ processImageFile }) {
                     <section>
                         <h3 className="text-white font-bold mb-1">Open Source</h3>
                         <p>This project is open source and available under the AGPL-3.0 license.</p>
-                        <a href="https://github.com/your-username/typewriter-studio" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 mt-2 text-blue-400 hover:text-white transition-colors">
+                        <a href="https://github.com/beanz-y/typewriter_art" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 mt-2 text-blue-400 hover:text-white transition-colors">
                           <Github size={16} /><span>View Source Code</span>
                         </a>
                     </section>
