@@ -47,10 +47,26 @@ self.onmessage = async (e) => {
     const outW = Math.floor(width * scale);
     const outH = Math.floor(height * scale);
 
+    // 1. Setup the main Typed Art Canvas
     const canvas = new OffscreenCanvas(outW, outH);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, outW, outH);
+
+    // 2. Setup the Original Image Mask Canvas (Pre-rendered for performance)
+    let origMaskCanvas = null;
+    if (maskData.original) {
+      origMaskCanvas = new OffscreenCanvas(outW, outH);
+      const oCtx = origMaskCanvas.getContext('2d');
+      oCtx.drawImage(sourceBitmap, 0, 0, outW, outH);
+      const origMaskBitmap = await createImageBitmap(maskData.original);
+      oCtx.globalCompositeOperation = 'destination-in';
+      oCtx.drawImage(origMaskBitmap, 0, 0, outW, outH);
+    }
+
+    // 3. Setup a Display Canvas to composite the layers before sending to UI
+    const displayCanvas = new OffscreenCanvas(outW, outH);
+    const displayCtx = displayCanvas.getContext('2d');
     
     const baseFontSize = Math.floor(params.fontSize * scale);
     const detailFontSize = Math.max(1, Math.floor(baseFontSize / 2));
@@ -77,9 +93,19 @@ self.onmessage = async (e) => {
     let activeFontSize = -1; 
 
     const renderChunk = async () => {
+      // Helper to package the frame safely
+      const sendFrame = async (messageType) => {
+        displayCtx.clearRect(0, 0, outW, outH);
+        displayCtx.drawImage(canvas, 0, 0); // Draw typed art layer first
+        if (origMaskCanvas) {
+          displayCtx.drawImage(origMaskCanvas, 0, 0); // Draw original subject on top
+        }
+        const bitmap = await createImageBitmap(displayCanvas);
+        self.postMessage({ type: messageType, progress: currentStroke / totalStrokes, imageBitmap: bitmap }, [bitmap]);
+      };
+
       if (stopFlag) {
-        const finalBitmap = await createImageBitmap(canvas);
-        self.postMessage({ type: 'FINISHED', progress: currentStroke / totalStrokes, imageBitmap: finalBitmap }, [finalBitmap]);
+        await sendFrame('FINISHED');
         return;
       }
 
@@ -96,11 +122,8 @@ self.onmessage = async (e) => {
         let isDetailMasked = maskData.detail && maskData.detail.data[(idx * 4) + 3] > 100;
         let isColorMasked = maskData.color && maskData.color.data[(idx * 4) + 3] > 100;
 
-        // --- NEW: DENSITY MATH USING UI SLIDER ---
         let maskMult = 1.0;
         if (maskData.density) {
-          // If masked, multiply probability. If unmasked, divide it.
-          // Example slider at 5.0: Masked = 500% probability, Unmasked = 20% probability.
           maskMult = isDensityMasked ? params.densityWeight : (1.0 / params.densityWeight); 
         }
 
@@ -108,7 +131,6 @@ self.onmessage = async (e) => {
         const darkness = (255.0 - pixelVal) / 255.0;
         
         let strikeProb = Math.pow(darkness, 2.2);
-        // Apply multiplier, but cap it so it doesn't break the random engine
         strikeProb = Math.min(strikeProb * maskMult, 1.0); 
 
         if (Math.random() < strikeProb) {
@@ -145,14 +167,10 @@ self.onmessage = async (e) => {
           const destX = rx * scale;
           const destY = ry * scale;
 
-          // --- NEW: DETAIL COMPENSATION LOOP ---
-          // Draw 3 clustered characters if in a detail zone to compensate for missing area
           const drawCount = isDetailMasked ? 3 : 1; 
           
           for(let d = 0; d < drawCount; d++) {
             ctx.save();
-            
-            // Add a small sub-pixel scatter to the extra strokes so they fill the space nicely
             let offsetX = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
             let offsetY = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
             
@@ -160,7 +178,6 @@ self.onmessage = async (e) => {
             ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
             ctx.fillText(char, 0, 0);
 
-            // Apply dirty ink smudge individually to each printed character
             if (params.dirtyInk > 0 && Math.random() < (params.dirtyInk * 0.2)) {
               const ox = Math.random() * 2 - 1;
               const oy = Math.random() * 2 - 1;
@@ -174,25 +191,9 @@ self.onmessage = async (e) => {
       }
 
       if (currentStroke >= totalStrokes) {
-        if (maskData.original) {
-          const origCanvas = new OffscreenCanvas(outW, outH);
-          const oCtx = origCanvas.getContext('2d');
-          
-          oCtx.drawImage(sourceBitmap, 0, 0, outW, outH);
-          
-          const origMaskBitmap = await createImageBitmap(maskData.original);
-          oCtx.globalCompositeOperation = 'destination-in';
-          oCtx.drawImage(origMaskBitmap, 0, 0, outW, outH);
-          
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.drawImage(origCanvas, 0, 0);
-        }
-
-        const finalBitmap = await createImageBitmap(canvas);
-        self.postMessage({ type: 'FINISHED', progress: 1.0, imageBitmap: finalBitmap }, [finalBitmap]);
+        await sendFrame('FINISHED');
       } else {
-        const bitmap = await createImageBitmap(canvas);
-        self.postMessage({ type: 'PROGRESS', progress: currentStroke / totalStrokes, imageBitmap: bitmap }, [bitmap]);
+        await sendFrame('PROGRESS');
         setTimeout(renderChunk, 0); 
       }
     };

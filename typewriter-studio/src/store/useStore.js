@@ -44,6 +44,10 @@ export const useStore = create((set) => ({
   undoStack: [],
   redoStack: [],
   maskRevision: 0,
+
+  // Export State
+  gifFrames: [],
+  isGeneratingGif: false,
   
   // Setters
   updateSetting: (key, value) => set({ [key]: value }),
@@ -56,6 +60,11 @@ export const useStore = create((set) => ({
   setViewport: (viewport) => set({ viewport }),
   toggleMasksVisible: () => set((state) => ({ masksVisible: !state.masksVisible })),
   
+  // Export Setters
+  addGifFrame: (frameObj) => set((state) => ({ gifFrames: [...state.gifFrames, frameObj] })),
+  clearGifFrames: () => set({ gifFrames: [] }),
+  setGeneratingGif: (val) => set({ isGeneratingGif: val }),
+
   // History Management
   saveHistoryState: () => set((state) => {
     const activeCanvas = state.masks[state.activeLayer];
@@ -127,6 +136,7 @@ export const useStore = create((set) => ({
     colorMode: 'Color', densityWeight: 5.0, inkOpacity: 140, edgeThreshold: 0.18, ribbonWear: 0.2, dirtyInk: 0.1,
     characterSet: DEFAULT_CHARS, toolMode: 'view', brushSize: 40, viewport: { scale: 1, x: 0, y: 0 },
     masks: { density: null, detail: null, color: null, original: null },
-    activeLayer: 'density', showAllMasks: false, masksVisible: true, undoStack: [], redoStack: [], maskRevision: 0
+    activeLayer: 'density', showAllMasks: false, masksVisible: true, undoStack: [], redoStack: [], maskRevision: 0,
+    gifFrames: [], isGeneratingGif: false
   })
 }));

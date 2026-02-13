@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
 import TypewriterWorker from '../engine/worker.js?worker';
+import GIF from 'gif.js';
 import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2 } from 'lucide-react';
 
 const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
@@ -20,7 +21,6 @@ const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   );
 };
 
-// FIX: Generate masks at 100% opacity
 const getLayerTint = (layer) => {
   switch(layer) {
     case 'density': return 'rgba(255, 0, 0, 1)';
@@ -93,7 +93,6 @@ export default function Sidebar({ processImageFile }) {
         if (data[i + 3] > 5) { 
           data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 0;
         } else {
-          // FIX: Invert fills at 255 alpha (100% opaque)
           data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255; 
         }
       }
@@ -110,12 +109,60 @@ export default function Sidebar({ processImageFile }) {
     store.updateMask(store.activeLayer, null);
   };
 
-  const toggleRender = async () => { // <--- Note the added 'async'
+  // --- EXPORT FUNCTIONS ---
+  const exportPNG = () => {
+    if (!store.renderedImage) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = store.renderedImage.width;
+    canvas.height = store.renderedImage.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(store.renderedImage, 0, 0);
+    
+    const link = document.createElement('a');
+    link.download = `typewriter-art-${Date.now()}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+
+  const exportGIF = () => {
+    const liveFrames = useStore.getState().gifFrames;
+    if (liveFrames.length === 0 || store.isGeneratingGif) return;
+    store.setGeneratingGif(true);
+
+    const gif = new GIF({
+      workers: 2,
+      quality: 10,
+      workerScript: '/gif.worker.js', 
+      width: liveFrames[0].canvas.width,
+      height: liveFrames[0].canvas.height
+    });
+
+    liveFrames.forEach((frame, index) => {
+      const delay = index === liveFrames.length - 1 ? 3000 : 100;
+      gif.addFrame(frame.canvas, { delay, copy: true });
+    });
+
+    gif.on('finished', (blob) => {
+      const link = document.createElement('a');
+      link.download = `typewriter-timelapse-${Date.now()}.gif`;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+      store.setGeneratingGif(false);
+    });
+
+    gif.render();
+  };
+
+  const toggleRender = async () => { 
     if (store.isRendering) {
       if (workerRef) workerRef.postMessage({ type: 'STOP' });
       return;
     }
     if (!store.originalImage) return;
+    
+    // Clear state using direct getState to avoid closures
+    useStore.getState().clearGifFrames();
+    
     store.updateSetting('isRendering', true);
     store.updateSetting('progress', 0);
 
@@ -126,7 +173,6 @@ export default function Sidebar({ processImageFile }) {
     ctx.drawImage(store.originalImage, 0, 0);
     const imageData = ctx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
 
-    // Helper to extract pixel data from active masks
     const getMaskData = (layer) => {
       const mask = store.masks[layer];
       if (!mask) return null;
@@ -141,7 +187,6 @@ export default function Sidebar({ processImageFile }) {
       original: getMaskData('original')
     };
 
-    // Pass the actual photo as a bitmap for ultra-fast rendering of the 'Original' mask
     const sourceBitmap = await createImageBitmap(store.originalImage);
 
     const worker = new TypewriterWorker();
@@ -149,10 +194,33 @@ export default function Sidebar({ processImageFile }) {
 
     worker.onmessage = (e) => {
       const { type, progress, imageBitmap } = e.data;
+      
       if (type === 'PROGRESS' || type === 'FINISHED') {
         store.updateSetting('progress', progress);
         store.updateSetting('renderedImage', imageBitmap);
+
+        // Fetch live state directly to break out of the React closure
+        const currentFrames = useStore.getState().gifFrames;
+        const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
+
+        if (progress - lastSavedProgress >= 0.02 || type === 'FINISHED') {
+          // Downscale to max 800px width for GIF memory safety
+          const gifScale = Math.min(1, 800 / imageBitmap.width);
+          const gifW = Math.floor(imageBitmap.width * gifScale);
+          const gifH = Math.floor(imageBitmap.height * gifScale);
+          
+          const tCanvas = document.createElement('canvas');
+          tCanvas.width = gifW;
+          tCanvas.height = gifH;
+          const tCtx = tCanvas.getContext('2d');
+          tCtx.fillStyle = 'white';
+          tCtx.fillRect(0, 0, gifW, gifH);
+          tCtx.drawImage(imageBitmap, 0, 0, gifW, gifH);
+          
+          useStore.getState().addGifFrame({ canvas: tCanvas, progress });
+        }
       }
+      
       if (type === 'FINISHED') {
         store.updateSetting('isRendering', false);
         setWorkerRef(null);
@@ -162,11 +230,7 @@ export default function Sidebar({ processImageFile }) {
     worker.postMessage({
       type: 'START',
       payload: {
-        imageData,
-        sourceBitmap,
-        maskData,
-        width: extractCanvas.width,
-        height: extractCanvas.height,
+        imageData, sourceBitmap, maskData, width: extractCanvas.width, height: extractCanvas.height,
         params: {
           totalStrokes: store.totalStrokes, fontSize: store.fontSize, gamma: store.gamma,
           outputScale: store.outputScale, inkOpacity: store.inkOpacity, ribbonWear: store.ribbonWear,
@@ -195,7 +259,7 @@ export default function Sidebar({ processImageFile }) {
           <div className="space-y-4">
             <ControlSlider label="Total Strokes" settingKey="totalStrokes" min={10000} max={1000000} step={10000} />
             <ControlSlider label="Base Font Size" settingKey="fontSize" min={8} max={40} step={1} />
-            <ControlSlider label="Density Focus" settingKey="densityWeight" min={1.0} max={10.0} step={0.5} tooltip="Controls how intensely the Density Mask hogs the strokes (1=None, 10=Extreme)" />
+            <ControlSlider label="Density Focus" settingKey="densityWeight" min={1.0} max={10.0} step={0.5} />
             <ControlSlider label="Gamma" settingKey="gamma" min={0.5} max={3.0} step={0.1} />
             <div className="flex gap-2 mb-4">
               <div className="flex-1">
@@ -268,6 +332,17 @@ export default function Sidebar({ processImageFile }) {
           {store.isRendering ? <Square size={16} className="mr-2 fill-current" /> : <Play size={16} className="mr-2 fill-current" />}
           {store.isRendering ? 'STOP RENDER' : 'RENDER ART'}
         </button>
+        
+        <div className="flex gap-2 pt-2">
+          <button onClick={exportPNG} disabled={!store.renderedImage} className="flex-1 flex items-center justify-center py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm transition-colors"><Download size={14} className="mr-1" /> PNG</button>
+          <button onClick={exportGIF} disabled={store.gifFrames.length === 0 || store.isGeneratingGif} className="flex-1 flex items-center justify-center py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm transition-colors" title="Export Timelapse GIF">
+            {store.isGeneratingGif ? <><Loader2 size={14} className="mr-1 animate-spin" /> ENCODING...</> : <><Film size={14} className="mr-1" /> GIF</>}
+          </button>
+        </div>
+        
+        <div className="w-full h-1.5 bg-neutral-900 rounded-full mt-4 overflow-hidden">
+          <div className="h-full bg-blue-500 transition-all duration-200 ease-out" style={{ width: `${store.progress * 100}%` }}></div>
+        </div>
       </div>
     </div>
   );
