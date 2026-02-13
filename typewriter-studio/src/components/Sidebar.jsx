@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
 import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2 } from 'lucide-react';
+import TypewriterWorker from '../engine/worker.js?worker';
 
 // Reusable Slider Component
 const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
@@ -30,6 +31,7 @@ const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
 export default function Sidebar({ processImageFile }) {
   const [activeTab, setActiveTab] = useState('General');
   const store = useStore();
+  const [workerRef, setWorkerRef] = useState(null);
 
   const handleCharPreset = (preset) => {
     store.updateSetting('characterSet', preset);
@@ -71,6 +73,75 @@ export default function Sidebar({ processImageFile }) {
   const clearMask = () => {
     store.updateSetting('maskImage', null);
     store.updateSetting('overlayCanvas', null);
+  };
+
+  const toggleRender = () => {
+    // If currently rendering, tell the worker to stop gracefully
+    if (store.isRendering) {
+      if (workerRef) workerRef.postMessage({ type: 'STOP' });
+      // We don't set isRendering to false here; we wait for the worker to acknowledge and send the final frame!
+      return;
+    }
+
+    if (!store.originalImage) return;
+
+    store.updateSetting('isRendering', true);
+    store.updateSetting('progress', 0);
+
+    // 1. Create a temporary canvas to extract ImageData (pixels) from the HTMLImageElement
+    const extractCanvas = document.createElement('canvas');
+    extractCanvas.width = store.originalImage.width;
+    extractCanvas.height = store.originalImage.height;
+    const ctx = extractCanvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(store.originalImage, 0, 0);
+    const imageData = ctx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
+
+    // 2. Extract Mask Data (if a subject was isolated)
+    let maskData = null;
+    if (store.overlayCanvas) {
+      const mCtx = store.overlayCanvas.getContext('2d', { willReadFrequently: true });
+      maskData = mCtx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
+    }
+
+    // 3. Initialize the Web Worker
+    const worker = new TypewriterWorker();
+    setWorkerRef(worker);
+
+    // 4. Listen for updates from the Worker
+    worker.onmessage = (e) => {
+      const { type, progress, imageBitmap } = e.data;
+      
+      if (type === 'PROGRESS' || type === 'FINISHED') {
+        store.updateSetting('progress', progress);
+        store.updateSetting('renderedImage', imageBitmap); // Pass the frame to the canvas
+      }
+      
+      if (type === 'FINISHED') {
+        store.updateSetting('isRendering', false);
+        setWorkerRef(null);
+      }
+    };
+
+    // 5. Send data to start the engine
+    worker.postMessage({
+      type: 'START',
+      payload: {
+        imageData,
+        maskData,
+        width: extractCanvas.width,
+        height: extractCanvas.height,
+        params: {
+          totalStrokes: store.totalStrokes,
+          fontSize: store.fontSize,
+          gamma: store.gamma,
+          outputScale: store.outputScale,
+          inkOpacity: store.inkOpacity,
+          ribbonWear: store.ribbonWear,
+          dirtyInk: store.dirtyInk,
+          characterSet: store.characterSet
+        }
+      }
+    });
   };
 
   return (
@@ -199,7 +270,7 @@ export default function Sidebar({ processImageFile }) {
           />
         </label>
         <button 
-          onClick={() => store.updateSetting('isRendering', !store.isRendering)}
+          onClick={toggleRender}
           className={`w-full flex items-center justify-center py-2.5 rounded text-sm font-bold transition-colors ${store.isRendering ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-500 hover:bg-emerald-600 text-neutral-900'}`}
         >
           {store.isRendering ? <Square size={16} className="mr-2 fill-current" /> : <Play size={16} className="mr-2 fill-current" />}

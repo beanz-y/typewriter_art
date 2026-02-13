@@ -28,6 +28,7 @@ const { viewport, setViewport, isSpaceHeld, toolMode, overlayCanvas } = useStore
   }, [image, isOriginal, setViewport]);
 
   // Main draw loop
+  // Main draw loop
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -41,6 +42,8 @@ const { viewport, setViewport, isSpaceHeld, toolMode, overlayCanvas } = useStore
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    const { outputScale, overlayCanvas } = useStore.getState();
+
     if (image) {
       ctx.save();
       
@@ -48,17 +51,23 @@ const { viewport, setViewport, isSpaceHeld, toolMode, overlayCanvas } = useStore
       ctx.translate(viewport.x, viewport.y);
       ctx.scale(viewport.scale, viewport.scale);
 
+      // FIX: Align the render canvas back to 1x scale visually
+      if (!isOriginal && outputScale) {
+        const invScale = 1 / parseFloat(outputScale);
+        ctx.scale(invScale, invScale);
+      }
+
       // Draw exactly at 0,0 relative to the translated/scaled context
       ctx.drawImage(image, 0, 0);
-
+      
       // Draw the AI Mask overlay if we are on the original canvas
-      if (isOriginal && useStore.getState().overlayCanvas) {
-        ctx.drawImage(useStore.getState().overlayCanvas, 0, 0);
+      if (isOriginal && overlayCanvas) {
+        ctx.drawImage(overlayCanvas, 0, 0);
       }
       
       ctx.restore();
     }
-  }, [image, viewport, isOriginal, overlayCanvas]);
+  }, [image, viewport, isOriginal]);
 
   // Redraw when viewport, image, or window size changes
   useEffect(() => {
