@@ -47,13 +47,12 @@ self.onmessage = async (e) => {
     const outW = Math.floor(width * scale);
     const outH = Math.floor(height * scale);
 
-    // 1. Setup the main Typed Art Canvas
     const canvas = new OffscreenCanvas(outW, outH);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, outW, outH);
 
-    // 2. Setup the Original Image Mask Canvas (Pre-rendered for performance)
+    // Pre-render original mask
     let origMaskCanvas = null;
     if (maskData.original) {
       origMaskCanvas = new OffscreenCanvas(outW, outH);
@@ -64,7 +63,6 @@ self.onmessage = async (e) => {
       oCtx.drawImage(origMaskBitmap, 0, 0, outW, outH);
     }
 
-    // 3. Setup a Display Canvas to composite the layers before sending to UI
     const displayCanvas = new OffscreenCanvas(outW, outH);
     const displayCtx = displayCanvas.getContext('2d');
     
@@ -88,18 +86,15 @@ self.onmessage = async (e) => {
     }
 
     const totalStrokes = params.totalStrokes;
-    const updateInterval = 5000;
+    const updateInterval = Math.max(5000, Math.floor(totalStrokes / 100));
     let currentStroke = 0;
     let activeFontSize = -1; 
 
     const renderChunk = async () => {
-      // Helper to package the frame safely
       const sendFrame = async (messageType) => {
         displayCtx.clearRect(0, 0, outW, outH);
-        displayCtx.drawImage(canvas, 0, 0); // Draw typed art layer first
-        if (origMaskCanvas) {
-          displayCtx.drawImage(origMaskCanvas, 0, 0); // Draw original subject on top
-        }
+        displayCtx.drawImage(canvas, 0, 0);
+        if (origMaskCanvas) displayCtx.drawImage(origMaskCanvas, 0, 0);
         const bitmap = await createImageBitmap(displayCanvas);
         self.postMessage({ type: messageType, progress: currentStroke / totalStrokes, imageBitmap: bitmap }, [bitmap]);
       };
@@ -112,6 +107,7 @@ self.onmessage = async (e) => {
       const chunkLimit = Math.min(currentStroke + updateInterval, totalStrokes);
       
       for (; currentStroke < chunkLimit; currentStroke++) {
+        // Initial random position
         const rx = Math.random() * (width - 1);
         const ry = Math.random() * (height - 1);
         const ix = Math.floor(rx);
@@ -146,34 +142,49 @@ self.onmessage = async (e) => {
 
           const wearFactor = 1.0 - (Math.random() * params.ribbonWear);
           const currentAlpha = (params.inkOpacity / 255) * wearFactor;
-          
-          const targetIndex = Math.floor((1.0 - darkness) * (rampLen - 1));
-          const finalIndex = Math.max(0, Math.min(rampLen - 1, targetIndex + Math.floor(Math.random() * 3 - 1)));
-          const char = currentRamp[finalIndex];
-
-          let useColor = params.colorMode === 'Color';
-          if (params.colorMode === 'Masked Color') useColor = isColorMasked;
-
-          const origR = pixels[idx * 4];
-          const origG = pixels[idx * 4 + 1];
-          const origB = pixels[idx * 4 + 2];
-          
-          if (useColor) {
-            ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha})`;
-          } else {
-            ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha})`;
-          }
 
           const destX = rx * scale;
           const destY = ry * scale;
 
+          // REFINED DETAIL LOGIC: 
+          // If detailed, draw 3 strokes, but re-sample the image for each one!
           const drawCount = isDetailMasked ? 3 : 1; 
           
           for(let d = 0; d < drawCount; d++) {
-            ctx.save();
+            // Determine local offset
             let offsetX = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
             let offsetY = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
+
+            // Map back to source image coordinates to find the TRUE character for this offset
+            const sampleRx = rx + (offsetX / scale);
+            const sampleRy = ry + (offsetY / scale);
             
+            // Boundary checks
+            if (sampleRx < 0 || sampleRx >= width || sampleRy < 0 || sampleRy >= height) continue;
+
+            const sampleIdx = Math.floor(sampleRy) * width + Math.floor(sampleRx);
+            const sampleVal = grayData[sampleIdx];
+            const sampleDarkness = (255.0 - sampleVal) / 255.0;
+            
+            // Pick character based on the NEW sample location
+            const targetIndex = Math.floor((1.0 - sampleDarkness) * (rampLen - 1));
+            const finalIndex = Math.max(0, Math.min(rampLen - 1, targetIndex + Math.floor(Math.random() * 3 - 1)));
+            const char = currentRamp[finalIndex];
+
+            // Color logic based on NEW sample location
+            let useColor = params.colorMode === 'Color';
+            if (params.colorMode === 'Masked Color') useColor = isColorMasked;
+            
+            if (useColor) {
+               const r = pixels[sampleIdx * 4];
+               const g = pixels[sampleIdx * 4 + 1];
+               const b = pixels[sampleIdx * 4 + 2];
+               ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${currentAlpha})`;
+            } else {
+               ctx.fillStyle = `rgba(${sampleVal}, ${sampleVal}, ${sampleVal}, ${currentAlpha})`;
+            }
+
+            ctx.save();
             ctx.translate(destX + offsetX, destY + offsetY);
             ctx.rotate((Math.random() * 10 - 5) * Math.PI / 180);
             ctx.fillText(char, 0, 0);
@@ -181,8 +192,7 @@ self.onmessage = async (e) => {
             if (params.dirtyInk > 0 && Math.random() < (params.dirtyInk * 0.2)) {
               const ox = Math.random() * 2 - 1;
               const oy = Math.random() * 2 - 1;
-              if (useColor) ctx.fillStyle = `rgba(${origR}, ${origG}, ${origB}, ${currentAlpha * 0.6})`;
-              else ctx.fillStyle = `rgba(${pixelVal}, ${pixelVal}, ${pixelVal}, ${currentAlpha * 0.6})`;
+              ctx.fillStyle = ctx.fillStyle.replace(/[\d.]+\)$/, `${currentAlpha * 0.6})`);
               ctx.fillText(char, ox, oy);
             }
             ctx.restore();

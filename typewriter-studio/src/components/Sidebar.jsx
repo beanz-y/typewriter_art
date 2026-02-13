@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
 import TypewriterWorker from '../engine/worker.js?worker';
 import GIF from 'gif.js';
-import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2 } from 'lucide-react';
+import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2, Info, Github } from 'lucide-react';
 
 const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   const value = useStore((state) => state[settingKey]);
@@ -44,6 +44,7 @@ const getLayerTintRGB = (layer) => {
 export default function Sidebar({ processImageFile }) {
   const [activeTab, setActiveTab] = useState('General');
   const [workerRef, setWorkerRef] = useState(null);
+  const [showAboutModal, setShowAboutModal] = useState(false);
   const store = useStore();
 
   const handleSubjectIsolation = async () => {
@@ -109,7 +110,6 @@ export default function Sidebar({ processImageFile }) {
     store.updateMask(store.activeLayer, null);
   };
 
-  // --- EXPORT FUNCTIONS ---
   const exportPNG = () => {
     if (!store.renderedImage) return;
     const canvas = document.createElement('canvas');
@@ -124,15 +124,31 @@ export default function Sidebar({ processImageFile }) {
     link.click();
   };
 
-  const exportGIF = () => {
+  const exportGIF = async () => { // <--- Added async
     const liveFrames = useStore.getState().gifFrames;
     if (liveFrames.length === 0 || store.isGeneratingGif) return;
+    
     store.setGeneratingGif(true);
+    store.updateSetting('progress', 0);
+
+    // FIX: Manually fetch the worker and create a Blob URL to bypass COEP security blocks
+    let workerUrl = '/gif.worker.js';
+    try {
+      const response = await fetch('/gif.worker.js');
+      if (response.ok) {
+        const workerBlob = await response.blob();
+        workerUrl = URL.createObjectURL(workerBlob);
+      } else {
+        console.warn("Could not load local worker, falling back to path.");
+      }
+    } catch (e) {
+      console.warn("Worker fetch failed:", e);
+    }
 
     const gif = new GIF({
-      workers: 2,
-      quality: 10,
-      workerScript: '/gif.worker.js', 
+      workers: 4, 
+      quality: 20, 
+      workerScript: workerUrl, // Pass the in-memory Blob URL instead of the file path
       width: liveFrames[0].canvas.width,
       height: liveFrames[0].canvas.height
     });
@@ -142,110 +158,126 @@ export default function Sidebar({ processImageFile }) {
       gif.addFrame(frame.canvas, { delay, copy: true });
     });
 
+    gif.on('progress', (p) => {
+      store.updateSetting('progress', p);
+    });
+
     gif.on('finished', (blob) => {
       const link = document.createElement('a');
       link.download = `typewriter-timelapse-${Date.now()}.gif`;
       link.href = URL.createObjectURL(blob);
       link.click();
+      
       store.setGeneratingGif(false);
+      store.updateSetting('progress', 1.0);
+      
+      // Cleanup the Blob URL to free memory
+      if (workerUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(workerUrl);
+      }
     });
 
     gif.render();
   };
 
-  const toggleRender = async () => { 
+  const toggleRender = () => { 
     if (store.isRendering) {
       if (workerRef) workerRef.postMessage({ type: 'STOP' });
       return;
     }
     if (!store.originalImage) return;
     
-    // Clear state using direct getState to avoid closures
     useStore.getState().clearGifFrames();
-    
     store.updateSetting('isRendering', true);
     store.updateSetting('progress', 0);
 
-    const extractCanvas = document.createElement('canvas');
-    extractCanvas.width = store.originalImage.width;
-    extractCanvas.height = store.originalImage.height;
-    const ctx = extractCanvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(store.originalImage, 0, 0);
-    const imageData = ctx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
+    setTimeout(async () => {
+      const extractCanvas = document.createElement('canvas');
+      extractCanvas.width = store.originalImage.width;
+      extractCanvas.height = store.originalImage.height;
+      const ctx = extractCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(store.originalImage, 0, 0);
+      const imageData = ctx.getImageData(0, 0, extractCanvas.width, extractCanvas.height);
 
-    const getMaskData = (layer) => {
-      const mask = store.masks[layer];
-      if (!mask) return null;
-      const mCtx = mask.getContext('2d', { willReadFrequently: true });
-      return mCtx.getImageData(0, 0, mask.width, mask.height);
-    };
+      const getMaskData = (layer) => {
+        const mask = store.masks[layer];
+        if (!mask) return null;
+        const mCtx = mask.getContext('2d', { willReadFrequently: true });
+        return mCtx.getImageData(0, 0, mask.width, mask.height);
+      };
 
-    const maskData = {
-      density: getMaskData('density'),
-      detail: getMaskData('detail'),
-      color: getMaskData('color'),
-      original: getMaskData('original')
-    };
+      const maskData = {
+        density: getMaskData('density'),
+        detail: getMaskData('detail'),
+        color: getMaskData('color'),
+        original: getMaskData('original')
+      };
 
-    const sourceBitmap = await createImageBitmap(store.originalImage);
+      const sourceBitmap = await createImageBitmap(store.originalImage);
 
-    const worker = new TypewriterWorker();
-    setWorkerRef(worker);
+      const worker = new TypewriterWorker();
+      setWorkerRef(worker);
 
-    worker.onmessage = (e) => {
-      const { type, progress, imageBitmap } = e.data;
-      
-      if (type === 'PROGRESS' || type === 'FINISHED') {
-        store.updateSetting('progress', progress);
-        store.updateSetting('renderedImage', imageBitmap);
+      worker.onmessage = (e) => {
+        const { type, progress, imageBitmap } = e.data;
+        
+        if (type === 'PROGRESS' || type === 'FINISHED') {
+          store.updateSetting('progress', progress);
+          store.updateSetting('renderedImage', imageBitmap);
 
-        // Fetch live state directly to break out of the React closure
-        const currentFrames = useStore.getState().gifFrames;
-        const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
+          const currentFrames = useStore.getState().gifFrames;
+          const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
 
-        if (progress - lastSavedProgress >= 0.02 || type === 'FINISHED') {
-          // Downscale to max 800px width for GIF memory safety
-          const gifScale = Math.min(1, 800 / imageBitmap.width);
-          const gifW = Math.floor(imageBitmap.width * gifScale);
-          const gifH = Math.floor(imageBitmap.height * gifScale);
-          
-          const tCanvas = document.createElement('canvas');
-          tCanvas.width = gifW;
-          tCanvas.height = gifH;
-          const tCtx = tCanvas.getContext('2d');
-          tCtx.fillStyle = 'white';
-          tCtx.fillRect(0, 0, gifW, gifH);
-          tCtx.drawImage(imageBitmap, 0, 0, gifW, gifH);
-          
-          useStore.getState().addGifFrame({ canvas: tCanvas, progress });
+          // FIX: Standardize on 2% increments (50 frames) even for massive renders.
+          // This triples the GIF length for 10M stroke renders compared to before.
+          const captureThreshold = 0.02; 
+
+          if (progress - lastSavedProgress >= captureThreshold || type === 'FINISHED') {
+            const gifScale = Math.min(1, 800 / imageBitmap.width);
+            const gifW = Math.floor(imageBitmap.width * gifScale);
+            const gifH = Math.floor(imageBitmap.height * gifScale);
+            
+            const tCanvas = document.createElement('canvas');
+            tCanvas.width = gifW;
+            tCanvas.height = gifH;
+            const tCtx = tCanvas.getContext('2d');
+            tCtx.fillStyle = 'white';
+            tCtx.fillRect(0, 0, gifW, gifH);
+            tCtx.drawImage(imageBitmap, 0, 0, gifW, gifH);
+            
+            useStore.getState().addGifFrame({ canvas: tCanvas, progress });
+          }
         }
-      }
-      
-      if (type === 'FINISHED') {
-        store.updateSetting('isRendering', false);
-        setWorkerRef(null);
-      }
-    };
-
-    worker.postMessage({
-      type: 'START',
-      payload: {
-        imageData, sourceBitmap, maskData, width: extractCanvas.width, height: extractCanvas.height,
-        params: {
-          totalStrokes: store.totalStrokes, fontSize: store.fontSize, gamma: store.gamma,
-          outputScale: store.outputScale, inkOpacity: store.inkOpacity, ribbonWear: store.ribbonWear,
-          dirtyInk: store.dirtyInk, characterSet: store.characterSet, colorMode: store.colorMode,
-          densityWeight: store.densityWeight
+        
+        if (type === 'FINISHED') {
+          store.updateSetting('isRendering', false);
+          setWorkerRef(null);
         }
-      }
-    });
+      };
+
+      worker.postMessage({
+        type: 'START',
+        payload: {
+          imageData, sourceBitmap, maskData, width: extractCanvas.width, height: extractCanvas.height,
+          params: {
+            totalStrokes: store.totalStrokes, fontSize: store.fontSize, gamma: store.gamma,
+            outputScale: store.outputScale, inkOpacity: store.inkOpacity, ribbonWear: store.ribbonWear,
+            dirtyInk: store.dirtyInk, characterSet: store.characterSet, colorMode: store.colorMode,
+            densityWeight: store.densityWeight
+          }
+        }
+      });
+    }, 50);
   };
 
   return (
     <div className="w-80 h-screen bg-neutral-800 flex flex-col shrink-0 border-r border-neutral-700 shadow-xl overflow-y-auto">
       <div className="p-4 flex justify-between items-center border-b border-neutral-700">
         <h1 className="text-lg font-bold tracking-wider text-neutral-100">TYPEWRITER STUDIO</h1>
-        <button onClick={store.resetControls} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-md transition-colors"><RefreshCw size={16} /></button>
+        <div className="flex gap-1">
+          <button onClick={() => setShowAboutModal(true)} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-md transition-colors text-neutral-300" title="About & Privacy"><Info size={16} /></button>
+          <button onClick={store.resetControls} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-md transition-colors text-neutral-300"><RefreshCw size={16} /></button>
+        </div>
       </div>
 
       <div className="flex p-2 gap-1 bg-neutral-800 border-b border-neutral-700">
@@ -257,8 +289,8 @@ export default function Sidebar({ processImageFile }) {
       <div className="flex-1 p-4 overflow-y-auto">
         {activeTab === 'General' && (
           <div className="space-y-4">
-            <ControlSlider label="Total Strokes" settingKey="totalStrokes" min={10000} max={1000000} step={10000} />
-            <ControlSlider label="Base Font Size" settingKey="fontSize" min={8} max={40} step={1} />
+            <ControlSlider label="Total Strokes" settingKey="totalStrokes" min={0} max={10000000} step={50000} />
+            <ControlSlider label="Base Font Size" settingKey="fontSize" min={8} max={200} step={1} />
             <ControlSlider label="Density Focus" settingKey="densityWeight" min={1.0} max={10.0} step={0.5} />
             <ControlSlider label="Gamma" settingKey="gamma" min={0.5} max={3.0} step={0.1} />
             <div className="flex gap-2 mb-4">
@@ -344,6 +376,48 @@ export default function Sidebar({ processImageFile }) {
           <div className="h-full bg-blue-500 transition-all duration-200 ease-out" style={{ width: `${store.progress * 100}%` }}></div>
         </div>
       </div>
+
+      {/* ABOUT MODAL */}
+      {showAboutModal && (
+        <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4">
+            <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-lg shadow-2xl relative overflow-y-auto max-h-[90vh]">
+                <button onClick={() => setShowAboutModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white transition-colors"><X size={20} /></button>
+                <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><span className="text-blue-500">◆</span> Typewriter Studio</h2>
+                
+                <div className="space-y-4 text-sm text-neutral-300 leading-relaxed">
+                    <section>
+                      <h3 className="text-white font-bold mb-1">Privacy Policy</h3>
+                      <p>We respect your privacy. <strong>This application runs entirely on your device.</strong> When you "upload" an image, it is processed locally in your browser's memory. Your photos are never sent to a server.</p>
+                    </section>
+                    
+                    <section>
+                      <h3 className="text-white font-bold mb-1">Terms of Service</h3>
+                      <p>This application is provided "as is", without warranty of any kind. You retain full copyright and ownership of any images you generate.</p>
+                    </section>
+                    
+                    <section>
+                        <h3 className="text-white font-bold mb-1">Open Source</h3>
+                        <p>This project is open source and available under the AGPL-3.0 license.</p>
+                        <a href="https://github.com/your-username/typewriter-studio" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 mt-2 text-blue-400 hover:text-white transition-colors">
+                          <Github size={16} /><span>View Source Code</span>
+                        </a>
+                    </section>
+                    
+                    <section>
+                      <h3 className="text-white font-bold mb-1">Software Credits</h3>
+                      <p className="text-xs text-neutral-500">This application utilizes open source software:<br/>
+                      • <a href="https://github.com/imgly/background-removal-js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">@imgly/background-removal</a> (AGPL-3.0)<br/>
+                      • <a href="https://github.com/jnordberg/gif.js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">gif.js</a> (MIT License)<br/>
+                      • <a href="https://lucide.dev/license" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">Lucide React</a> (ISC License)</p>
+                    </section>
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-neutral-800 text-center">
+                  <button onClick={() => setShowAboutModal(false)} className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-white font-medium transition-colors">Close</button>
+                </div>
+            </div>
+        </div>
+      )}
     </div>
   );
 }
