@@ -27,9 +27,8 @@ function App() {
       const img = new Image();
       img.onload = () => {
         updateSetting('originalImage', img);
-        // Reset masks and previous render when a new image loads
-        updateSetting('maskImage', null);
-        updateSetting('overlayCanvas', null);
+        // Reset ALL masks and previous render when a new image loads
+        updateSetting('masks', { density: null, detail: null, color: null, original: null });
         updateSetting('renderedImage', null);
       };
       img.src = e.target.result;
