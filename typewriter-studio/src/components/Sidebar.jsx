@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
 import TypewriterWorker from '../engine/worker.js?worker';
 import GIF from 'gif.js';
-import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2, Info, Github } from 'lucide-react';
+import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2, Info, Github, Settings2 } from 'lucide-react';
 
 const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   const value = useStore((state) => state[settingKey]);
@@ -44,7 +44,14 @@ const getLayerTintRGB = (layer) => {
 export default function Sidebar({ processImageFile }) {
   const [activeTab, setActiveTab] = useState('General');
   const [workerRef, setWorkerRef] = useState(null);
+  
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showGifConfig, setShowGifConfig] = useState(false);
+  
+  const [gifDuration, setGifDuration] = useState(10); 
+  const [gifWidthPct, setGifWidthPct] = useState(100); 
+  const [gifFrameUsePct, setGifFrameUsePct] = useState(100); // NEW: Controls how many captured frames to use
+
   const store = useStore();
 
   const handleSubjectIsolation = async () => {
@@ -124,14 +131,33 @@ export default function Sidebar({ processImageFile }) {
     link.click();
   };
 
-  const exportGIF = async () => {
+  const handleGifClick = () => {
     const liveFrames = useStore.getState().gifFrames;
     if (liveFrames.length === 0 || store.isGeneratingGif) return;
+    setShowGifConfig(true);
+  };
+
+  // Helper to calculate estimated file size
+  const getEstimatedGifSize = () => {
+    const frames = store.gifFrames;
+    if (!frames.length) return "0.0";
     
+    const w = frames[0].canvas.width * (gifWidthPct / 100);
+    const h = frames[0].canvas.height * (gifWidthPct / 100);
+    
+    // Calculate actual frames used based on slider
+    const usedFrames = Math.ceil(frames.length * (gifFrameUsePct / 100));
+    
+    const estBytes = (w * h * usedFrames) * 0.9;
+    return (estBytes / 1024 / 1024).toFixed(1);
+  };
+
+  const startGifEncoding = async () => {
+    setShowGifConfig(false);
+    const allFrames = useStore.getState().gifFrames;
     store.setGeneratingGif(true);
     store.updateSetting('progress', 0); 
 
-    // Blob URL Fix for strict headers
     let workerUrl = '/gif.worker.js';
     try {
       const response = await fetch('/gif.worker.js');
@@ -141,18 +167,42 @@ export default function Sidebar({ processImageFile }) {
       }
     } catch (e) { console.warn("Worker fetch failed:", e); }
 
+    const baseW = allFrames[0].canvas.width;
+    const baseH = allFrames[0].canvas.height;
+    const scale = gifWidthPct / 100.0;
+    const finalW = Math.floor(baseW * scale);
+    const finalH = Math.floor(baseH * scale);
+
     const gif = new GIF({
       workers: 4, 
       quality: 20, 
       workerScript: workerUrl,
-      width: liveFrames[0].canvas.width,
-      height: liveFrames[0].canvas.height
+      width: finalW,
+      height: finalH
     });
 
-    liveFrames.forEach((frame, index) => {
-      // Longer pause at the end (3000ms), fast playback (100ms) for the rest
-      const delay = index === liveFrames.length - 1 ? 3000 : 100;
-      gif.addFrame(frame.canvas, { delay, copy: true });
+    // Filter frames based on Frame Density slider
+    // If 50%, we take every 2nd frame (step = 2). If 25%, step = 4.
+    const step = Math.round(100 / gifFrameUsePct);
+    const framesToEncode = allFrames.filter((_, i) => i % step === 0 || i === allFrames.length - 1);
+
+    const activeFrames = Math.max(1, framesToEncode.length - 1);
+    const finalPause = 3000; 
+    let calculatedDelay = Math.max(40, (gifDuration * 1000) / activeFrames);
+
+    framesToEncode.forEach((frame, index) => {
+      const delay = index === framesToEncode.length - 1 ? finalPause : calculatedDelay;
+      
+      if (scale < 1.0) {
+        const tCanvas = document.createElement('canvas');
+        tCanvas.width = finalW;
+        tCanvas.height = finalH;
+        const ctx = tCanvas.getContext('2d');
+        ctx.drawImage(frame.canvas, 0, 0, finalW, finalH);
+        gif.addFrame(tCanvas, { delay, copy: true });
+      } else {
+        gif.addFrame(frame.canvas, { delay, copy: true });
+      }
     });
 
     gif.on('progress', (p) => {
@@ -221,24 +271,19 @@ export default function Sidebar({ processImageFile }) {
           const currentFrames = useStore.getState().gifFrames;
           const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
 
-          // Capture Threshold: 2% (0.02) ensures we get ~50 frames regardless of total strokes.
-          const captureThreshold = 0.02;
+          // FIX: Capture twice as many frames (1% increments = 100 frames)
+          // This gives us the "raw material" for smoother, longer GIFs.
+          const captureThreshold = 0.01;
 
           if (progress - lastSavedProgress >= captureThreshold || type === 'FINISHED') {
-            
-            // --- NEW HIGH-RES GIF LOGIC ---
-            // Target width: 1200px (up from 800)
-            const MAX_GIF_WIDTH = 1200;
-            const MAX_GIF_PIXELS = 2000000; // ~1080p limit to prevent crashes
+            const MAX_GIF_HEIGHT = 1080;
+            const MAX_GIF_PIXELS = 2000000; 
 
             let gifScale = 1;
-            
-            // 1. Width Check
-            if (imageBitmap.width > MAX_GIF_WIDTH) {
-              gifScale = MAX_GIF_WIDTH / imageBitmap.width;
+            if (imageBitmap.height > MAX_GIF_HEIGHT) {
+              gifScale = MAX_GIF_HEIGHT / imageBitmap.height;
             }
 
-            // 2. Total Pixel Count Check (Safety for tall images)
             const potentialW = imageBitmap.width * gifScale;
             const potentialH = imageBitmap.height * gifScale;
             if ((potentialW * potentialH) > MAX_GIF_PIXELS) {
@@ -378,7 +423,7 @@ export default function Sidebar({ processImageFile }) {
         
         <div className="flex gap-2 pt-2">
           <button onClick={exportPNG} disabled={!store.renderedImage} className="flex-1 flex items-center justify-center py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm transition-colors"><Download size={14} className="mr-1" /> PNG</button>
-          <button onClick={exportGIF} disabled={store.gifFrames.length === 0 || store.isGeneratingGif} className="flex-1 flex items-center justify-center py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm transition-colors" title="Export Timelapse GIF">
+          <button onClick={handleGifClick} disabled={store.gifFrames.length === 0 || store.isGeneratingGif} className="flex-1 flex items-center justify-center py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm transition-colors" title="Export Timelapse GIF">
             {store.isGeneratingGif ? <><Loader2 size={14} className="mr-1 animate-spin" /> ENCODING...</> : <><Film size={14} className="mr-1" /> GIF</>}
           </button>
         </div>
@@ -425,6 +470,64 @@ export default function Sidebar({ processImageFile }) {
                 
                 <div className="mt-6 pt-4 border-t border-neutral-800 text-center">
                   <button onClick={() => setShowAboutModal(false)} className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-white font-medium transition-colors">Close</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* GIF CONFIG MODAL */}
+      {showGifConfig && (
+        <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4">
+            <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-white flex items-center gap-2"><Settings2 size={18} /> GIF Settings</h2>
+                  <button onClick={() => setShowGifConfig(false)} className="text-neutral-500 hover:text-white"><X size={20} /></button>
+                </div>
+
+                <div className="space-y-6">
+                  {/* Duration Control */}
+                  <div>
+                    <div className="flex justify-between text-xs mb-2">
+                      <span className="text-neutral-300">Target Duration</span>
+                      <span className="text-blue-400 font-mono">{gifDuration}s</span>
+                    </div>
+                    <input type="range" min="2" max="60" step="1" value={gifDuration} onChange={(e) => setGifDuration(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                    <p className="text-[10px] text-neutral-500 mt-1">Controls how fast the timelapse plays.</p>
+                  </div>
+
+                  {/* Resolution Control */}
+                  <div>
+                    <div className="flex justify-between text-xs mb-2">
+                      <span className="text-neutral-300">Resolution Scale</span>
+                      <span className="text-blue-400 font-mono">{gifWidthPct}%</span>
+                    </div>
+                    <input type="range" min="25" max="100" step="25" value={gifWidthPct} onChange={(e) => setGifWidthPct(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                    <p className="text-[10px] text-neutral-500 mt-1">
+                      {gifWidthPct === 100 ? "Original Size (Max Quality)" : "Downscale to reduce file size."}
+                    </p>
+                  </div>
+
+                  {/* Frame Density Control - NEW */}
+                  <div>
+                    <div className="flex justify-between text-xs mb-2">
+                      <span className="text-neutral-300">Frame Density</span>
+                      <span className="text-blue-400 font-mono">{gifFrameUsePct}%</span>
+                    </div>
+                    <input type="range" min="25" max="100" step="25" value={gifFrameUsePct} onChange={(e) => setGifFrameUsePct(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                    <p className="text-[10px] text-neutral-500 mt-1">
+                      {gifFrameUsePct === 100 ? "Max Smoothness (Uses all frames)" : "Skip frames to reduce file size."}
+                    </p>
+                  </div>
+                  
+                  {/* File Size Estimate */}
+                  <div className="flex justify-between items-end border-t border-neutral-800 pt-4 pb-2">
+                    <span className="text-xs text-neutral-400">Est. Size:</span>
+                    <span className="text-sm font-bold text-white">~{getEstimatedGifSize()} MB</span>
+                  </div>
+
+                  <button onClick={startGifEncoding} className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-bold text-sm transition-colors shadow-lg">
+                    START ENCODING
+                  </button>
                 </div>
             </div>
         </div>
