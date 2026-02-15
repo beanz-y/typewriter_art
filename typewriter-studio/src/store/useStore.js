@@ -10,7 +10,7 @@ export const useStore = create((set) => ({
   resolution: '2000',
   outputScale: '2.0',
   colorMode: 'Color', 
-  densityWeight: 5.0, // NEW: Controls the Density mask distribution
+  densityWeight: 5.0, 
   
   // Physics Settings
   inkOpacity: 140,
@@ -24,6 +24,7 @@ export const useStore = create((set) => ({
   // Application State
   toolMode: 'view', 
   brushSize: 40,
+  brushHardness: 0.5, // NEW: 0.0 = Softest, 1.0 = Hard Edge
   isRendering: false,
   progress: 0,
 
@@ -60,11 +61,11 @@ export const useStore = create((set) => ({
   setViewport: (viewport) => set({ viewport }),
   toggleMasksVisible: () => set((state) => ({ masksVisible: !state.masksVisible })),
   
-  // Export Setters
+  // --- Export Setters ---
   addGifFrame: (frameObj) => set((state) => ({ gifFrames: [...state.gifFrames, frameObj] })),
   clearGifFrames: () => set({ gifFrames: [] }),
   setGeneratingGif: (val) => set({ isGeneratingGif: val }),
-
+  
   // History Management
   saveHistoryState: () => set((state) => {
     const activeCanvas = state.masks[state.activeLayer];
@@ -134,7 +135,7 @@ export const useStore = create((set) => ({
   resetControls: () => set({
     totalStrokes: 300000, fontSize: 14, gamma: 1.4, resolution: '2000', outputScale: '2.0',
     colorMode: 'Color', densityWeight: 5.0, inkOpacity: 140, edgeThreshold: 0.18, ribbonWear: 0.2, dirtyInk: 0.1,
-    characterSet: DEFAULT_CHARS, toolMode: 'view', brushSize: 40, viewport: { scale: 1, x: 0, y: 0 },
+    characterSet: DEFAULT_CHARS, toolMode: 'view', brushSize: 40, brushHardness: 0.5, viewport: { scale: 1, x: 0, y: 0 },
     masks: { density: null, detail: null, color: null, original: null },
     activeLayer: 'density', showAllMasks: false, masksVisible: true, undoStack: [], redoStack: [], maskRevision: 0,
     gifFrames: [], isGeneratingGif: false

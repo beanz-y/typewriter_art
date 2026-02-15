@@ -52,7 +52,6 @@ self.onmessage = async (e) => {
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, outW, outH);
 
-    // Pre-render original mask
     let origMaskCanvas = null;
     if (maskData.original) {
       origMaskCanvas = new OffscreenCanvas(outW, outH);
@@ -107,20 +106,26 @@ self.onmessage = async (e) => {
       const chunkLimit = Math.min(currentStroke + updateInterval, totalStrokes);
       
       for (; currentStroke < chunkLimit; currentStroke++) {
-        // Initial random position
         const rx = Math.random() * (width - 1);
         const ry = Math.random() * (height - 1);
         const ix = Math.floor(rx);
         const iy = Math.floor(ry);
         const idx = iy * width + ix;
 
-        let isDensityMasked = maskData.density && maskData.density.data[(idx * 4) + 3] > 100;
-        let isDetailMasked = maskData.detail && maskData.detail.data[(idx * 4) + 3] > 100;
-        let isColorMasked = maskData.color && maskData.color.data[(idx * 4) + 3] > 100;
+        // READ MASKS AS FLOATS (0.0 to 1.0) for soft edges
+        // Note: data[idx*4+3] is the Alpha channel.
+        let densityAlpha = maskData.density ? maskData.density.data[(idx * 4) + 3] / 255.0 : 0;
+        let detailAlpha = maskData.detail ? maskData.detail.data[(idx * 4) + 3] / 255.0 : 0;
+        let colorAlpha = maskData.color ? maskData.color.data[(idx * 4) + 3] / 255.0 : 0;
 
+        // DENSITY LOGIC: Linear Interpolation based on alpha
+        // If alpha is 0.5 (feathered edge), we use a multiplier halfway between "Base" and "Boost".
         let maskMult = 1.0;
         if (maskData.density) {
-          maskMult = isDensityMasked ? params.densityWeight : (1.0 / params.densityWeight); 
+          const boost = params.densityWeight;
+          const suppress = 1.0 / params.densityWeight;
+          // Lerp: suppress + (boost - suppress) * alpha
+          maskMult = suppress + (boost - suppress) * densityAlpha;
         }
 
         const pixelVal = grayData[idx];
@@ -131,9 +136,14 @@ self.onmessage = async (e) => {
 
         if (Math.random() < strikeProb) {
           
-          const currentRamp = isDetailMasked ? detailRamp : baseRamp;
+          // DETAIL LOGIC: Probabilistic switching
+          // If alpha is 0.5, 50% chance to be "Detailed", 50% chance to be "Base".
+          // This creates a dithered transition area.
+          const isDetailStroke = Math.random() < detailAlpha;
+          
+          const currentRamp = isDetailStroke ? detailRamp : baseRamp;
           const rampLen = currentRamp.length;
-          const targetFontSize = isDetailMasked ? detailFontSize : baseFontSize;
+          const targetFontSize = isDetailStroke ? detailFontSize : baseFontSize;
 
           if (targetFontSize !== activeFontSize) {
             ctx.font = `bold ${targetFontSize}px monospace`;
@@ -146,34 +156,31 @@ self.onmessage = async (e) => {
           const destX = rx * scale;
           const destY = ry * scale;
 
-          // REFINED DETAIL LOGIC: 
-          // If detailed, draw 3 strokes, but re-sample the image for each one!
-          const drawCount = isDetailMasked ? 3 : 1; 
+          const drawCount = isDetailStroke ? 3 : 1; 
           
           for(let d = 0; d < drawCount; d++) {
-            // Determine local offset
             let offsetX = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
             let offsetY = d > 0 ? (Math.random() * targetFontSize - targetFontSize/2) : 0;
 
-            // Map back to source image coordinates to find the TRUE character for this offset
             const sampleRx = rx + (offsetX / scale);
             const sampleRy = ry + (offsetY / scale);
             
-            // Boundary checks
             if (sampleRx < 0 || sampleRx >= width || sampleRy < 0 || sampleRy >= height) continue;
 
             const sampleIdx = Math.floor(sampleRy) * width + Math.floor(sampleRx);
             const sampleVal = grayData[sampleIdx];
             const sampleDarkness = (255.0 - sampleVal) / 255.0;
             
-            // Pick character based on the NEW sample location
             const targetIndex = Math.floor((1.0 - sampleDarkness) * (rampLen - 1));
             const finalIndex = Math.max(0, Math.min(rampLen - 1, targetIndex + Math.floor(Math.random() * 3 - 1)));
             const char = currentRamp[finalIndex];
 
-            // Color logic based on NEW sample location
+            // COLOR LOGIC: Probabilistic switching
+            // If alpha is 0.5, 50% chance to pick RGB color, 50% chance to use B&W.
             let useColor = params.colorMode === 'Color';
-            if (params.colorMode === 'Masked Color') useColor = isColorMasked;
+            if (params.colorMode === 'Masked Color') {
+                useColor = Math.random() < colorAlpha;
+            }
             
             if (useColor) {
                const r = pixels[sampleIdx * 4];

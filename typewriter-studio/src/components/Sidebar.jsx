@@ -98,11 +98,10 @@ export default function Sidebar({ processImageFile }) {
       const data = imgData.data;
       
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i + 3] > 5) { 
-          data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; data[i + 3] = 0;
-        } else {
-          data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255; 
-        }
+        data[i] = rgb[0];
+        data[i+1] = rgb[1];
+        data[i+2] = rgb[2];
+        data[i+3] = 255 - data[i+3]; // Flip alpha
       }
       ctx.putImageData(imgData, 0, 0);
     } else {
@@ -408,6 +407,7 @@ export default function Sidebar({ processImageFile }) {
             <button onClick={clearMask} className="flex-[0.5] flex justify-center items-center py-1.5 rounded bg-red-900/40 text-red-400 hover:bg-red-800 hover:text-white" title="Clear Active Mask"><X size={14} /></button>
           </div>
           <ControlSlider label="Brush Size" settingKey="brushSize" min={1} max={200} step={1} />
+          <ControlSlider label="Brush Hardness" settingKey="brushHardness" min={0.0} max={1.0} step={0.1} tooltip="0 = Soft (Feathered), 1 = Hard Edge" />
         </div>
       </div>
 

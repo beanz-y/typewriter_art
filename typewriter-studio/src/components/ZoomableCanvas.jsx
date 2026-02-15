@@ -105,18 +105,49 @@ export default function ZoomableCanvas({ image, isOriginal }) {
     const maskCanvas = ensureMaskExists();
     const ctx = maskCanvas.getContext('2d');
     
-    ctx.beginPath();
-    ctx.arc(x, y, store.brushSize, 0, Math.PI * 2);
+    // SOFT BRUSH LOGIC
+    // We use a Radial Gradient instead of a hard arc fill if hardness < 1.0
+    const radius = store.brushSize;
     
-    if (erase) {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'rgba(0,0,0,1)';
+    if (store.brushHardness < 0.99) {
+        // Gradient Brush
+        const grad = ctx.createRadialGradient(x, y, radius * store.brushHardness, x, y, radius);
+        
+        if (erase) {
+            grad.addColorStop(0, 'rgba(0,0,0,1)'); // Core wipes completely
+            grad.addColorStop(1, 'rgba(0,0,0,0)'); // Edge wipes nothing
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.fillStyle = grad;
+        } else {
+            const rgb = getLayerTintRGB(store.activeLayer);
+            const colorStr = `${rgb[0]}, ${rgb[1]}, ${rgb[2]}`;
+            grad.addColorStop(0, `rgba(${colorStr}, 1)`); // Solid core
+            grad.addColorStop(1, `rgba(${colorStr}, 0)`); // Fade to transparency
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = grad;
+        }
+        
+        // Draw the gradient
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        
     } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = getLayerTint(store.activeLayer);
+        // Standard Hard Brush (Faster performance)
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        
+        if (erase) {
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.fillStyle = 'rgba(0,0,0,1)';
+        } else {
+            const rgb = getLayerTintRGB(store.activeLayer);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 1)`;
+        }
+        ctx.fill();
     }
     
-    ctx.fill();
     draw(); 
   };
 
@@ -202,7 +233,10 @@ export default function ZoomableCanvas({ image, isOriginal }) {
           backgroundColor: isErasing ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)',
           pointerEvents: 'none',
           zIndex: 50,
-          boxShadow: '0 0 0 1px rgba(0,0,0,0.3) inset, 0 0 0 1px rgba(0,0,0,0.3)'
+          // Add a second, inner shadow to visualize feathering if softness is active
+          boxShadow: store.brushHardness < 0.8 
+            ? '0 0 10px 2px rgba(255,255,255,0.3) inset, 0 0 2px 1px rgba(0,0,0,0.3)' 
+            : '0 0 0 1px rgba(0,0,0,0.3) inset, 0 0 0 1px rgba(0,0,0,0.3)'
         }} />
       )}
     </div>
