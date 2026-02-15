@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../store/useStore';
 
+// HELPER: Defined at top level to ensure availability
+const getLayerTintRGB = (layer) => {
+  switch(layer) {
+    case 'density': return [255, 0, 0];
+    case 'detail': return [0, 150, 255];
+    case 'color': return [255, 200, 0];
+    case 'original': return [0, 255, 100];
+    default: return [255, 0, 0];
+  }
+};
+
 export default function ZoomableCanvas({ image, isOriginal }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -47,7 +58,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
       ctx.drawImage(image, 0, 0);
       
       if (isOriginal && store.masksVisible) {
-        // FIX: Force uniform 40% transparency when rendering the 100% opaque masks
         ctx.globalAlpha = 0.4; 
         if (store.showAllMasks) {
           Object.values(store.masks).forEach(maskCanvas => {
@@ -63,7 +73,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
     }
   }, [image, store.viewport, isOriginal, store.masks, store.activeLayer, store.showAllMasks, store.masksVisible, store.outputScale]);
 
-  // FIX: Added store.maskRevision dependency so Undo/Redo instantly triggers a redraw
   useEffect(() => {
     draw();
     const handleResize = () => draw();
@@ -89,16 +98,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
       return newCanvas;
     }
     return store.masks[store.activeLayer];
-  };
-
-  const getLayerTint = (layer) => {
-    switch(layer) {
-      case 'density': return 'rgba(255, 0, 0, 1)';
-      case 'detail': return 'rgba(0, 150, 255, 1)';
-      case 'color': return 'rgba(255, 200, 0, 1)';
-      case 'original': return 'rgba(0, 255, 100, 1)';
-      default: return 'rgba(255, 0, 0, 1)';
-    }
   };
 
   const paintOnMask = (x, y, erase = false) => {
@@ -162,7 +161,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
 
   const handleMouseDown = (e) => {
     if (e.button === 2) e.preventDefault(); 
-
     if (e.button === 1 || store.isSpaceHeld || store.toolMode === 'view' || !isOriginal) {
       setIsDragging(true);
       setLastMouse({ x: e.clientX, y: e.clientY });
@@ -180,7 +178,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
   const handleMouseMove = (e) => {
     const pos = getMousePosOnImage(e.clientX, e.clientY);
     setMousePos({ x: pos.mouseX, y: pos.mouseY, show: store.toolMode === 'brush' && !isDragging });
-
     if (isDragging) {
       const dx = e.clientX - lastMouse.x;
       const dy = e.clientY - lastMouse.y;
@@ -192,9 +189,7 @@ export default function ZoomableCanvas({ image, isOriginal }) {
   };
 
   const handleMouseLeave = () => {
-    setIsDragging(false);
-    setIsPainting(false);
-    setIsErasing(false);
+    setIsDragging(false); setIsPainting(false); setIsErasing(false);
     setMousePos(prev => ({ ...prev, show: false }));
   };
 
