@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../store/useStore';
 
-// HELPER: Defined at top level to ensure availability
 const getLayerTintRGB = (layer) => {
   switch(layer) {
     case 'density': return [255, 0, 0];
@@ -20,6 +19,9 @@ export default function ZoomableCanvas({ image, isOriginal }) {
   const [isErasing, setIsErasing] = useState(false);
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
   const [mousePos, setMousePos] = useState({ x: -1000, y: -1000, show: false });
+  
+  // Track previous brush position for interpolation
+  const [prevBrushPos, setPrevBrushPos] = useState(null);
 
   const store = useStore();
 
@@ -100,54 +102,104 @@ export default function ZoomableCanvas({ image, isOriginal }) {
     return store.masks[store.activeLayer];
   };
 
-  const paintOnMask = (x, y, erase = false) => {
+  // --- NEW HIGH-PERFORMANCE BRUSH ENGINE ---
+  const paintOnMask = (currX, currY, erase = false) => {
     const maskCanvas = ensureMaskExists();
     const ctx = maskCanvas.getContext('2d');
-    
-    // SOFT BRUSH LOGIC
-    // We use a Radial Gradient instead of a hard arc fill if hardness < 1.0
     const radius = store.brushSize;
+    const opacity = store.brushOpacity;
+    const hardness = store.brushHardness;
+    const rgb = getLayerTintRGB(store.activeLayer);
+
+    // 1. Determine the bounding box of the stroke segment
+    // We interpolate from the last known brush position to the current one
+    const startX = prevBrushPos ? prevBrushPos.x : currX;
+    const startY = prevBrushPos ? prevBrushPos.y : currY;
+
+    // Calculate bounding box that covers both start and end circles
+    const minX = Math.floor(Math.min(startX, currX) - radius - 1);
+    const minY = Math.floor(Math.min(startY, currY) - radius - 1);
+    const maxX = Math.ceil(Math.max(startX, currX) + radius + 1);
+    const maxY = Math.ceil(Math.max(startY, currY) + radius + 1);
+
+    // Clip to canvas bounds
+    const sx = Math.max(0, minX);
+    const sy = Math.max(0, minY);
+    const ex = Math.min(maskCanvas.width, maxX);
+    const ey = Math.min(maskCanvas.height, maxY);
+    const w = ex - sx;
+    const h = ey - sy;
+
+    if (w <= 0 || h <= 0) return;
+
+    // 2. Grab pixel data ONCE
+    const imgData = ctx.getImageData(sx, sy, w, h);
+    const data = imgData.data;
+
+    // Pre-calculate math constants
+    const radiusSq = radius * radius;
+    const solidRadius = radius * hardness;
+    const fadeWidth = radius - solidRadius;
     
-    if (store.brushHardness < 0.99) {
-        // Gradient Brush
-        const grad = ctx.createRadialGradient(x, y, radius * store.brushHardness, x, y, radius);
-        
-        if (erase) {
-            grad.addColorStop(0, 'rgba(0,0,0,1)'); // Core wipes completely
-            grad.addColorStop(1, 'rgba(0,0,0,0)'); // Edge wipes nothing
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.fillStyle = grad;
-        } else {
-            const rgb = getLayerTintRGB(store.activeLayer);
-            const colorStr = `${rgb[0]}, ${rgb[1]}, ${rgb[2]}`;
-            grad.addColorStop(0, `rgba(${colorStr}, 1)`); // Solid core
-            grad.addColorStop(1, `rgba(${colorStr}, 0)`); // Fade to transparency
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = grad;
+    // Vector math for segment distance
+    const dx = currX - startX;
+    const dy = currY - startY;
+    const lenSq = dx*dx + dy*dy;
+
+    // 3. Iterate pixels
+    for (let y = 0; y < h; y++) {
+      const py = sy + y;
+      for (let x = 0; x < w; x++) {
+        const px = sx + x;
+        const idx = (y * w + x) * 4;
+
+        // Calculate shortest distance from Pixel(px,py) to LineSegment(Start->End)
+        let t = 0;
+        if (lenSq > 0) {
+          t = ((px - startX) * dx + (py - startY) * dy) / lenSq;
+          t = Math.max(0, Math.min(1, t));
         }
         
-        // Draw the gradient
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
+        // Closest point on the line
+        const closeX = startX + t * dx;
+        const closeY = startY + t * dy;
         
-    } else {
-        // Standard Hard Brush (Faster performance)
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        
-        if (erase) {
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.fillStyle = 'rgba(0,0,0,1)';
-        } else {
-            const rgb = getLayerTintRGB(store.activeLayer);
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 1)`;
+        // Distance squared
+        const distSq = (px - closeX)**2 + (py - closeY)**2;
+
+        if (distSq <= radiusSq) {
+          const dist = Math.sqrt(distSq);
+          
+          // Calculate Brush Alpha Strength (0.0 to 1.0)
+          let alphaFactor = 1.0;
+          if (dist > solidRadius) {
+             alphaFactor = 1.0 - ((dist - solidRadius) / fadeWidth);
+          }
+          // Scale by global brush opacity setting
+          alphaFactor *= opacity;
+
+          const targetAlpha = Math.floor(alphaFactor * 255);
+          const currentAlpha = data[idx + 3];
+
+          if (erase) {
+            // Subtract brush alpha from current
+            data[idx + 3] = Math.max(0, currentAlpha - targetAlpha);
+          } else {
+            // "MAX" Blending: Only increase opacity, never decrease or add
+            if (targetAlpha > currentAlpha) {
+               data[idx] = rgb[0];
+               data[idx+1] = rgb[1];
+               data[idx+2] = rgb[2];
+               data[idx+3] = targetAlpha;
+            }
+          }
         }
-        ctx.fill();
+      }
     }
-    
-    draw(); 
+
+    // 4. Write back ONCE
+    ctx.putImageData(imgData, sx, sy);
+    draw();
   };
 
   const handleWheel = (e) => {
@@ -171,6 +223,7 @@ export default function ZoomableCanvas({ image, isOriginal }) {
       else setIsPainting(true);
       
       const pos = getMousePosOnImage(e.clientX, e.clientY);
+      setPrevBrushPos({ x: pos.x, y: pos.y }); // Initialize start of stroke
       paintOnMask(pos.x, pos.y, erase);
     }
   };
@@ -178,6 +231,7 @@ export default function ZoomableCanvas({ image, isOriginal }) {
   const handleMouseMove = (e) => {
     const pos = getMousePosOnImage(e.clientX, e.clientY);
     setMousePos({ x: pos.mouseX, y: pos.mouseY, show: store.toolMode === 'brush' && !isDragging });
+    
     if (isDragging) {
       const dx = e.clientX - lastMouse.x;
       const dy = e.clientY - lastMouse.y;
@@ -185,11 +239,13 @@ export default function ZoomableCanvas({ image, isOriginal }) {
       setLastMouse({ x: e.clientX, y: e.clientY });
     } else if ((isPainting || isErasing) && isOriginal && store.masksVisible) {
       paintOnMask(pos.x, pos.y, isErasing);
+      setPrevBrushPos({ x: pos.x, y: pos.y }); // Update for next segment
     }
   };
 
   const handleMouseLeave = () => {
     setIsDragging(false); setIsPainting(false); setIsErasing(false);
+    setPrevBrushPos(null);
     setMousePos(prev => ({ ...prev, show: false }));
   };
 
@@ -228,7 +284,6 @@ export default function ZoomableCanvas({ image, isOriginal }) {
           backgroundColor: isErasing ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)',
           pointerEvents: 'none',
           zIndex: 50,
-          // Add a second, inner shadow to visualize feathering if softness is active
           boxShadow: store.brushHardness < 0.8 
             ? '0 0 10px 2px rgba(255,255,255,0.3) inset, 0 0 2px 1px rgba(0,0,0,0.3)' 
             : '0 0 0 1px rgba(0,0,0,0.3) inset, 0 0 0 1px rgba(0,0,0,0.3)'

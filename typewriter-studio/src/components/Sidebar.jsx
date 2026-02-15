@@ -1,9 +1,10 @@
+// ... imports remain the same ...
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
 import TypewriterWorker from '../engine/worker.js?worker';
 import GIF from 'gif.js';
-import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2, Info, Github, Settings2, Scissors, PauseCircle, PlayCircle } from 'lucide-react';
+import { RefreshCw, Image as ImageIcon, Play, Square, Download, Film, Brush, Wand2, X, Loader2, Contrast, Eye, EyeOff, Layers, Undo2, Redo2, Info, Github, Settings2, Scissors, PauseCircle, PlayCircle, Crop, Check } from 'lucide-react';
 
 const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   const value = useStore((state) => state[settingKey]);
@@ -21,6 +22,7 @@ const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   );
 };
 
+// ... helpers (getLayerTint/RGB) remain the same ...
 const getLayerTint = (layer) => {
   switch(layer) {
     case 'density': return 'rgba(255, 0, 0, 1)';
@@ -45,38 +47,62 @@ export default function Sidebar({ processImageFile }) {
   const [activeTab, setActiveTab] = useState('General');
   const [workerRef, setWorkerRef] = useState(null);
   
-  // Modals state
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [showGifConfig, setShowGifConfig] = useState(false);
   
-  // GIF Config State
   const [gifDuration, setGifDuration] = useState(10); 
-  const [gifWidthPct, setGifWidthPct] = useState(100); 
+  const [gifTargetHeight, setGifTargetHeight] = useState(1080);
   const [gifFrameUsePct, setGifFrameUsePct] = useState(100);
   
-  // GIF Trimming & Preview State
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [previewIndex, setPreviewIndex] = useState(0);
+  
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropRect, setCropRect] = useState(null); 
+  const [dragStart, setDragStart] = useState(null);
+  
   const previewCanvasRef = useRef(null);
-
   const store = useStore();
 
-  // --- PREVIEW PLAYER LOGIC ---
   useEffect(() => {
     if (!showGifConfig || !store.gifFrames.length) return;
 
     const frame = store.gifFrames[previewIndex];
     const canvas = previewCanvasRef.current;
-    if (frame && canvas) {
+    
+    const displayFrame = isCropping ? store.gifFrames[0] : frame;
+
+    if (displayFrame && canvas) {
       const ctx = canvas.getContext('2d');
-      canvas.width = frame.canvas.width;
-      canvas.height = frame.canvas.height;
-      ctx.drawImage(frame.canvas, 0, 0);
+      if (canvas.width !== displayFrame.canvas.width) {
+          canvas.width = displayFrame.canvas.width;
+          canvas.height = displayFrame.canvas.height;
+      }
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(displayFrame.canvas, 0, 0);
+
+      if (isCropping && cropRect) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const x = (cropRect.x / 100) * canvas.width;
+        const y = (cropRect.y / 100) * canvas.height;
+        const w = (cropRect.w / 100) * canvas.width;
+        const h = (cropRect.h / 100) * canvas.height;
+        
+        ctx.clearRect(x, y, w, h);
+        ctx.drawImage(displayFrame.canvas, x, y, w, h, x, y, w, h);
+        
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+      }
     }
 
-    if (!isPlaying) return;
+    if (!isPlaying || isCropping) return;
 
     const timeout = setTimeout(() => {
       setPreviewIndex(prev => {
@@ -90,7 +116,7 @@ export default function Sidebar({ processImageFile }) {
     }, 100); 
 
     return () => clearTimeout(timeout);
-  }, [showGifConfig, isPlaying, previewIndex, trimStart, trimEnd, gifFrameUsePct, store.gifFrames]);
+  }, [showGifConfig, isPlaying, previewIndex, trimStart, trimEnd, gifFrameUsePct, store.gifFrames, isCropping, cropRect]);
 
 
   const handleGifClick = () => {
@@ -101,18 +127,61 @@ export default function Sidebar({ processImageFile }) {
     setTrimEnd(liveFrames.length - 1);
     setPreviewIndex(0);
     setIsPlaying(true);
+    setIsCropping(false);
+    setCropRect(null); 
     setShowGifConfig(true);
+  };
+
+  const handleCropMouseDown = (e) => {
+    if (!isCropping) return;
+    const rect = previewCanvasRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setDragStart({ x, y });
+    setCropRect({ x, y, w: 0, h: 0 });
+  };
+
+  const handleCropMouseMove = (e) => {
+    if (!isCropping || !dragStart) return;
+    const rect = previewCanvasRef.current.getBoundingClientRect();
+    const currentX = ((e.clientX - rect.left) / rect.width) * 100;
+    const currentY = ((e.clientY - rect.top) / rect.height) * 100;
+    
+    const x = Math.min(dragStart.x, currentX);
+    const y = Math.min(dragStart.y, currentY);
+    const w = Math.abs(currentX - dragStart.x);
+    const h = Math.abs(currentY - dragStart.y);
+    
+    setCropRect({ x, y, w, h });
+  };
+
+  const handleCropMouseUp = () => {
+    setDragStart(null);
   };
 
   const getEstimatedGifSize = () => {
     const frames = store.gifFrames;
     if (!frames.length) return "0.0";
     
-    const w = frames[0].canvas.width * (gifWidthPct / 100);
-    const h = frames[0].canvas.height * (gifWidthPct / 100);
+    let w, h;
+    let aspectRatio;
+    
+    // Size Estimation Logic
+    if (cropRect && cropRect.w > 0) {
+        // If cropping, output size = crop size (1:1)
+        w = frames[0].canvas.width * (cropRect.w / 100);
+        h = frames[0].canvas.height * (cropRect.h / 100);
+    } else {
+        // If not cropping, output size = scaled to target height
+        aspectRatio = frames[0].canvas.width / frames[0].canvas.height;
+        h = gifTargetHeight;
+        w = h * aspectRatio;
+    }
+
     const totalFramesInRange = Math.max(1, trimEnd - trimStart);
     const usedFrames = Math.ceil(totalFramesInRange * (gifFrameUsePct / 100));
-    const estBytes = (w * h * usedFrames) * 0.9;
+    
+    const estBytes = (w * h * usedFrames) * 0.9; 
     return (estBytes / 1024 / 1024).toFixed(1);
   };
 
@@ -131,11 +200,25 @@ export default function Sidebar({ processImageFile }) {
       }
     } catch (e) { console.warn("Worker fetch failed:", e); }
 
-    const baseW = allFrames[0].canvas.width;
-    const baseH = allFrames[0].canvas.height;
-    const scale = gifWidthPct / 100.0;
-    const finalW = Math.floor(baseW * scale);
-    const finalH = Math.floor(baseH * scale);
+    // --- DIMENSION CALCULATION ---
+    let srcX = 0, srcY = 0, srcW = allFrames[0].canvas.width, srcH = allFrames[0].canvas.height;
+    let finalW, finalH;
+
+    if (cropRect && cropRect.w > 0) {
+        // CROP MODE: 1:1 Native Resolution
+        srcX = Math.floor((cropRect.x / 100) * srcW);
+        srcY = Math.floor((cropRect.y / 100) * srcH);
+        srcW = Math.floor((cropRect.w / 100) * srcW);
+        srcH = Math.floor((cropRect.h / 100) * srcH);
+        
+        finalW = srcW;
+        finalH = srcH;
+    } else {
+        // STANDARD MODE: Scale to Target Height
+        const scale = gifTargetHeight / srcH;
+        finalW = Math.floor(srcW * scale);
+        finalH = gifTargetHeight;
+    }
 
     const gif = new GIF({
       workers: 4, 
@@ -155,16 +238,15 @@ export default function Sidebar({ processImageFile }) {
     framesToEncode.forEach((frame, index) => {
       const delay = index === framesToEncode.length - 1 ? finalPause : calculatedDelay;
       
-      if (scale < 1.0) {
-        const tCanvas = document.createElement('canvas');
-        tCanvas.width = finalW;
-        tCanvas.height = finalH;
-        const ctx = tCanvas.getContext('2d');
-        ctx.drawImage(frame.canvas, 0, 0, finalW, finalH);
-        gif.addFrame(tCanvas, { delay, copy: true });
-      } else {
-        gif.addFrame(frame.canvas, { delay, copy: true });
-      }
+      const tCanvas = document.createElement('canvas');
+      tCanvas.width = finalW;
+      tCanvas.height = finalH;
+      const ctx = tCanvas.getContext('2d');
+      
+      // Draw cropped/scaled source -> destination
+      ctx.drawImage(frame.canvas, srcX, srcY, srcW, srcH, 0, 0, finalW, finalH);
+      
+      gif.addFrame(tCanvas, { delay, copy: true });
     });
 
     gif.on('progress', (p) => {
@@ -185,6 +267,7 @@ export default function Sidebar({ processImageFile }) {
     gif.render();
   };
 
+  // ... (handleSubjectIsolation, invertMask, clearMask, exportPNG, toggleRender unchanged) ...
   const handleSubjectIsolation = async () => {
     if (!store.originalImage || store.isProcessingBg) return;
     store.saveHistoryState(); 
@@ -352,7 +435,6 @@ export default function Sidebar({ processImageFile }) {
 
   return (
     <div className="w-80 h-screen bg-neutral-800 flex flex-col shrink-0 border-r border-neutral-700 shadow-xl overflow-y-auto">
-      {/* ... Header and Tabs ... */}
       <div className="p-4 flex justify-between items-center border-b border-neutral-700">
         <h1 className="text-lg font-bold tracking-wider text-neutral-100">TYPEWRITER STUDIO</h1>
         <div className="flex gap-1">
@@ -404,7 +486,6 @@ export default function Sidebar({ processImageFile }) {
           </div>
         )}
 
-        {/* --- TOOLS FRAME --- */}
         <div className="mt-6 bg-neutral-900 p-3 rounded-lg border border-neutral-700">
           <div className="flex items-center justify-between mb-3 pb-2 border-b border-neutral-800">
             <div className="flex items-center text-xs text-neutral-400 font-bold uppercase tracking-wider">
@@ -433,6 +514,7 @@ export default function Sidebar({ processImageFile }) {
           </div>
           <ControlSlider label="Brush Size" settingKey="brushSize" min={1} max={200} step={1} />
           <ControlSlider label="Brush Hardness" settingKey="brushHardness" min={0.0} max={1.0} step={0.1} tooltip="0 = Soft (Feathered), 1 = Hard Edge" />
+          <ControlSlider label="Brush Opacity" settingKey="brushOpacity" min={0.1} max={1.0} step={0.1} tooltip="Max darkness per stroke. Prevents buildup." />
         </div>
       </div>
 
@@ -456,49 +538,22 @@ export default function Sidebar({ processImageFile }) {
         </div>
       </div>
 
-      {/* ABOUT MODAL (Fixed Link) */}
       {showAboutModal && (
         <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4">
             <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-lg shadow-2xl relative overflow-y-auto max-h-[90vh]">
                 <button onClick={() => setShowAboutModal(false)} className="absolute top-4 right-4 text-neutral-500 hover:text-white transition-colors"><X size={20} /></button>
                 <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><span className="text-blue-500">◆</span> Typewriter Studio</h2>
-                
                 <div className="space-y-4 text-sm text-neutral-300 leading-relaxed">
-                    <section>
-                      <h3 className="text-white font-bold mb-1">Privacy Policy</h3>
-                      <p>We respect your privacy. <strong>This application runs entirely on your device.</strong> When you "upload" an image, it is processed locally in your browser's memory. Your photos are never sent to a server.</p>
-                    </section>
-                    
-                    <section>
-                      <h3 className="text-white font-bold mb-1">Terms of Service</h3>
-                      <p>This application is provided "as is", without warranty of any kind. You retain full copyright and ownership of any images you generate.</p>
-                    </section>
-                    
-                    <section>
-                        <h3 className="text-white font-bold mb-1">Open Source</h3>
-                        <p>This project is open source and available under the AGPL-3.0 license.</p>
-                        <a href="https://github.com/beanz-y/typewriter_art" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 mt-2 text-blue-400 hover:text-white transition-colors">
-                          <Github size={16} /><span>View Source Code</span>
-                        </a>
-                    </section>
-                    
-                    <section>
-                      <h3 className="text-white font-bold mb-1">Software Credits</h3>
-                      <p className="text-xs text-neutral-500">This application utilizes open source software:<br/>
-                      • <a href="https://github.com/imgly/background-removal-js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">@imgly/background-removal</a> (AGPL-3.0)<br/>
-                      • <a href="https://github.com/jnordberg/gif.js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">gif.js</a> (MIT License)<br/>
-                      • <a href="https://lucide.dev/license" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">Lucide React</a> (ISC License)</p>
-                    </section>
+                    <section><h3 className="text-white font-bold mb-1">Privacy Policy</h3><p>We respect your privacy. <strong>This application runs entirely on your device.</strong> When you "upload" an image, it is processed locally in your browser's memory. Your photos are never sent to a server.</p></section>
+                    <section><h3 className="text-white font-bold mb-1">Terms of Service</h3><p>This application is provided "as is", without warranty of any kind. You retain full copyright and ownership of any images you generate.</p></section>
+                    <section><h3 className="text-white font-bold mb-1">Open Source</h3><p>This project is open source and available under the AGPL-3.0 license.</p><a href="https://github.com/beanz-y/typewriter_art" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 mt-2 text-blue-400 hover:text-white transition-colors"><Github size={16} /><span>View Source Code</span></a></section>
+                    <section><h3 className="text-white font-bold mb-1">Software Credits</h3><p className="text-xs text-neutral-500">This application utilizes open source software:<br/>• <a href="https://github.com/imgly/background-removal-js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">@imgly/background-removal</a> (AGPL-3.0)<br/>• <a href="https://github.com/jnordberg/gif.js" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">gif.js</a> (MIT License)<br/>• <a href="https://lucide.dev/license" target="_blank" rel="noreferrer" className="underline hover:text-blue-400">Lucide React</a> (ISC License)</p></section>
                 </div>
-                
-                <div className="mt-6 pt-4 border-t border-neutral-800 text-center">
-                  <button onClick={() => setShowAboutModal(false)} className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-white font-medium transition-colors">Close</button>
-                </div>
+                <div className="mt-6 pt-4 border-t border-neutral-800 text-center"><button onClick={() => setShowAboutModal(false)} className="px-6 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-white font-medium transition-colors">Close</button></div>
             </div>
         </div>
       )}
 
-      {/* GIF CONFIG MODAL */}
       {showGifConfig && (
         <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4">
             <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-md shadow-2xl max-h-[95vh] overflow-y-auto">
@@ -508,96 +563,112 @@ export default function Sidebar({ processImageFile }) {
                 </div>
 
                 <div className="space-y-6">
-                  {/* LIVE PREVIEW PLAYER */}
-                  <div className="bg-black rounded-lg overflow-hidden border border-neutral-700 relative aspect-video flex items-center justify-center">
-                    <canvas ref={previewCanvasRef} className="max-w-full max-h-full object-contain" />
+                  <div 
+                    className="bg-black rounded-lg overflow-hidden border border-neutral-700 relative aspect-video flex items-center justify-center cursor-crosshair"
+                    onMouseDown={handleCropMouseDown}
+                    onMouseMove={handleCropMouseMove}
+                    onMouseUp={handleCropMouseUp}
+                    onMouseLeave={handleCropMouseUp}
+                  >
+                    <canvas ref={previewCanvasRef} className="max-w-full max-h-full object-contain pointer-events-none" />
+                    <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-[10px] font-mono text-neutral-300 backdrop-blur-sm z-10">
+                       {isCropping ? "Draw Crop Box" : `Frame: ${previewIndex}`}
+                    </div>
+                    {!isCropping && (
+                        <button onClick={() => setIsPlaying(!isPlaying)} className="absolute bottom-2 right-2 p-2 bg-black/60 hover:bg-blue-600 rounded-full text-white transition-colors backdrop-blur-sm z-10">
+                          {isPlaying ? <PauseCircle size={20} /> : <PlayCircle size={20} />}
+                        </button>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2">
                     <button 
-                      onClick={() => setIsPlaying(!isPlaying)}
-                      className="absolute bottom-2 right-2 p-2 bg-black/60 hover:bg-blue-600 rounded-full text-white transition-colors backdrop-blur-sm"
+                      onClick={() => {
+                        setIsCropping(!isCropping);
+                        if (!isCropping) {
+                            setIsPlaying(false);
+                            setPreviewIndex(0);
+                        } else {
+                            setCropRect(null); 
+                        }
+                      }} 
+                      className={`flex-1 flex items-center justify-center py-2 rounded text-xs font-bold transition-colors ${isCropping ? 'bg-red-900/50 text-red-400 border border-red-800' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}`}
                     >
-                      {isPlaying ? <PauseCircle size={20} /> : <PlayCircle size={20} />}
+                      {isCropping ? <><X size={14} className="mr-1"/> Cancel Crop</> : <><Crop size={14} className="mr-1"/> Set Crop Region</>}
                     </button>
-                    <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 rounded text-[10px] font-mono text-neutral-300 backdrop-blur-sm">
-                       Frame: {previewIndex}
-                    </div>
+                    {isCropping && cropRect && (
+                        <button 
+                          onClick={() => {
+                              setIsCropping(false);
+                              setIsPlaying(true);
+                          }}
+                          className="flex-1 flex items-center justify-center py-2 bg-emerald-900/50 text-emerald-400 border border-emerald-800 rounded text-xs font-bold"
+                        >
+                          <Check size={14} className="mr-1"/> Confirm
+                        </button>
+                    )}
                   </div>
 
-                  {/* TRIM CONTROLS */}
-                  <div className="bg-neutral-800 p-3 rounded-lg border border-neutral-700">
-                    <div className="flex items-center gap-2 mb-3 text-white font-bold text-sm">
-                       <Scissors size={14} /> Trim Loop
-                    </div>
-                    <div className="flex gap-4">
-                      <div className="flex-1">
-                        <label className="text-[10px] text-neutral-400 block mb-1">Start Frame</label>
-                        <input 
-                           type="range" min="0" max={store.gifFrames.length - 1} step="1" 
-                           value={trimStart} 
-                           onChange={(e) => {
-                             const val = parseInt(e.target.value);
-                             setTrimStart(val);
-                             if (val > trimEnd) setTrimEnd(val);
-                             setPreviewIndex(val);
-                           }} 
-                           className="w-full accent-emerald-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" 
-                        />
-                        <div className="text-right text-[10px] text-emerald-400 font-mono mt-0.5">{trimStart}</div>
-                      </div>
-                      <div className="flex-1">
-                        <label className="text-[10px] text-neutral-400 block mb-1">End Frame</label>
-                        <input 
-                           type="range" min="0" max={store.gifFrames.length - 1} step="1" 
-                           value={trimEnd} 
-                           onChange={(e) => {
-                             const val = parseInt(e.target.value);
-                             setTrimEnd(val);
-                             if (val < trimStart) setTrimStart(val);
-                             setPreviewIndex(val);
-                           }} 
-                           className="w-full accent-red-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" 
-                        />
-                        <div className="text-right text-[10px] text-red-400 font-mono mt-0.5">{trimEnd}</div>
+                  {!isCropping && (
+                    <div className="bg-neutral-800 p-3 rounded-lg border border-neutral-700">
+                      <div className="flex items-center gap-2 mb-3 text-white font-bold text-sm"><Scissors size={14} /> Trim Loop</div>
+                      <div className="flex gap-4">
+                        <div className="flex-1">
+                          <label className="text-[10px] text-neutral-400 block mb-1">Start Frame</label>
+                          <input type="range" min="0" max={store.gifFrames.length - 1} step="1" value={trimStart} onChange={(e) => { const val = parseInt(e.target.value); setTrimStart(val); if (val > trimEnd) setTrimEnd(val); setPreviewIndex(val); }} className="w-full accent-emerald-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                          <div className="text-right text-[10px] text-emerald-400 font-mono mt-0.5">{trimStart}</div>
+                        </div>
+                        <div className="flex-1">
+                          <label className="text-[10px] text-neutral-400 block mb-1">End Frame</label>
+                          <input type="range" min="0" max={store.gifFrames.length - 1} step="1" value={trimEnd} onChange={(e) => { const val = parseInt(e.target.value); setTrimEnd(val); if (val < trimStart) setTrimStart(val); setPreviewIndex(val); }} className="w-full accent-red-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                          <div className="text-right text-[10px] text-red-400 font-mono mt-0.5">{trimEnd}</div>
+                        </div>
                       </div>
                     </div>
-                    <p className="text-[10px] text-neutral-500 mt-2 italic">
-                       Set start/end points to capture the "breathing" loop at the end of large renders.
-                    </p>
-                  </div>
+                  )}
 
-                  {/* SETTINGS GROUP */}
-                  <div className="space-y-4">
-                    <div>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-neutral-300">Target Duration</span>
-                        <span className="text-blue-400 font-mono">{gifDuration}s</span>
+                  {!isCropping && (
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between text-xs mb-1"><span className="text-neutral-300">Target Duration</span><span className="text-blue-400 font-mono">{gifDuration}s</span></div>
+                        <input type="range" min="2" max="60" step="1" value={gifDuration} onChange={(e) => setGifDuration(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
                       </div>
-                      <input type="range" min="2" max="60" step="1" value={gifDuration} onChange={(e) => setGifDuration(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-neutral-300">Resolution Scale</span>
-                        <span className="text-blue-400 font-mono">{gifWidthPct}%</span>
+                      
+                      {/* SHOW TARGET HEIGHT SLIDER ONLY IF NOT CROPPING */}
+                      {!cropRect && (
+                        <div>
+                          <div className="flex justify-between text-xs mb-1"><span className="text-neutral-300">Target Height (px)</span><span className="text-blue-400 font-mono">{gifTargetHeight}px</span></div>
+                          <input type="range" min="360" max="2160" step="120" value={gifTargetHeight} onChange={(e) => setGifTargetHeight(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                          <p className="text-[10px] text-neutral-500 mt-1">Output will scale to be exactly this tall.</p>
+                        </div>
+                      )}
+                      
+                      {/* IF CROPPING, SHOW NATIVE RES INDICATOR */}
+                      {cropRect && (
+                        <div className="p-2 bg-blue-900/30 border border-blue-800 rounded text-xs text-blue-200">
+                           <span className="font-bold">Crop Mode:</span> Using Native Resolution (1:1 Quality)
+                        </div>
+                      )}
+
+                      <div>
+                        <div className="flex justify-between text-xs mb-1"><span className="text-neutral-300">Frame Density</span><span className="text-blue-400 font-mono">{gifFrameUsePct}%</span></div>
+                        <input type="range" min="25" max="100" step="25" value={gifFrameUsePct} onChange={(e) => setGifFrameUsePct(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
                       </div>
-                      <input type="range" min="25" max="100" step="25" value={gifWidthPct} onChange={(e) => setGifWidthPct(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
                     </div>
-                    <div>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-neutral-300">Frame Density</span>
-                        <span className="text-blue-400 font-mono">{gifFrameUsePct}%</span>
-                      </div>
-                      <input type="range" min="25" max="100" step="25" value={gifFrameUsePct} onChange={(e) => setGifFrameUsePct(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
-                    </div>
-                  </div>
+                  )}
                   
-                  {/* File Size Estimate */}
-                  <div className="flex justify-between items-end border-t border-neutral-800 pt-4 pb-2">
-                    <span className="text-xs text-neutral-400">Est. Size:</span>
-                    <span className="text-sm font-bold text-white">~{getEstimatedGifSize()} MB</span>
-                  </div>
+                  {!isCropping && (
+                    <div className="flex justify-between items-end border-t border-neutral-800 pt-4 pb-2">
+                      <span className="text-xs text-neutral-400">Est. Size:</span>
+                      <span className="text-sm font-bold text-white">~{getEstimatedGifSize()} MB</span>
+                    </div>
+                  )}
 
-                  <button onClick={startGifEncoding} className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-bold text-sm transition-colors shadow-lg">
-                    START ENCODING
-                  </button>
+                  {!isCropping && (
+                    <button onClick={startGifEncoding} className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-bold text-sm transition-colors shadow-lg">
+                      START ENCODING
+                    </button>
+                  )}
                 </div>
             </div>
         </div>
