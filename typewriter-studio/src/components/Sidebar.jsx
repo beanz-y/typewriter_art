@@ -1,4 +1,3 @@
-// ... imports remain the same ...
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { removeBackground } from '@imgly/background-removal';
@@ -22,7 +21,6 @@ const ControlSlider = ({ label, settingKey, min, max, step, tooltip }) => {
   );
 };
 
-// ... helpers (getLayerTint/RGB) remain the same ...
 const getLayerTint = (layer) => {
   switch(layer) {
     case 'density': return 'rgba(255, 0, 0, 1)';
@@ -163,20 +161,20 @@ export default function Sidebar({ processImageFile }) {
     const frames = store.gifFrames;
     if (!frames.length) return "0.0";
     
-    let w, h;
     let aspectRatio;
     
-    // Size Estimation Logic
+    // 1. Determine Aspect Ratio (Crop or Full)
     if (cropRect && cropRect.w > 0) {
-        // If cropping, output size = crop size (1:1)
-        w = frames[0].canvas.width * (cropRect.w / 100);
-        h = frames[0].canvas.height * (cropRect.h / 100);
+       const sourceW = frames[0].canvas.width * (cropRect.w / 100);
+       const sourceH = frames[0].canvas.height * (cropRect.h / 100);
+       aspectRatio = sourceW / sourceH;
     } else {
-        // If not cropping, output size = scaled to target height
-        aspectRatio = frames[0].canvas.width / frames[0].canvas.height;
-        h = gifTargetHeight;
-        w = h * aspectRatio;
+       aspectRatio = frames[0].canvas.width / frames[0].canvas.height;
     }
+    
+    // 2. Scale to Target Height (Same logic as encoding now)
+    const h = gifTargetHeight;
+    const w = h * aspectRatio;
 
     const totalFramesInRange = Math.max(1, trimEnd - trimStart);
     const usedFrames = Math.ceil(totalFramesInRange * (gifFrameUsePct / 100));
@@ -201,24 +199,20 @@ export default function Sidebar({ processImageFile }) {
     } catch (e) { console.warn("Worker fetch failed:", e); }
 
     // --- DIMENSION CALCULATION ---
+    // 1. Identify Source Rectangle
     let srcX = 0, srcY = 0, srcW = allFrames[0].canvas.width, srcH = allFrames[0].canvas.height;
-    let finalW, finalH;
-
+    
     if (cropRect && cropRect.w > 0) {
-        // CROP MODE: 1:1 Native Resolution
         srcX = Math.floor((cropRect.x / 100) * srcW);
         srcY = Math.floor((cropRect.y / 100) * srcH);
         srcW = Math.floor((cropRect.w / 100) * srcW);
         srcH = Math.floor((cropRect.h / 100) * srcH);
-        
-        finalW = srcW;
-        finalH = srcH;
-    } else {
-        // STANDARD MODE: Scale to Target Height
-        const scale = gifTargetHeight / srcH;
-        finalW = Math.floor(srcW * scale);
-        finalH = gifTargetHeight;
     }
+
+    // 2. Identify Destination Size (Always respect Target Height)
+    const finalH = gifTargetHeight;
+    const aspectRatio = srcW / srcH;
+    const finalW = Math.floor(finalH * aspectRatio);
 
     const gif = new GIF({
       workers: 4, 
@@ -243,7 +237,7 @@ export default function Sidebar({ processImageFile }) {
       tCanvas.height = finalH;
       const ctx = tCanvas.getContext('2d');
       
-      // Draw cropped/scaled source -> destination
+      // Draw SOURCE Region -> DESTINATION Size (Allows upscaling or downscaling)
       ctx.drawImage(frame.canvas, srcX, srcY, srcW, srcH, 0, 0, finalW, finalH);
       
       gif.addFrame(tCanvas, { delay, copy: true });
@@ -267,7 +261,6 @@ export default function Sidebar({ processImageFile }) {
     gif.render();
   };
 
-  // ... (handleSubjectIsolation, invertMask, clearMask, exportPNG, toggleRender unchanged) ...
   const handleSubjectIsolation = async () => {
     if (!store.originalImage || store.isProcessingBg) return;
     store.saveHistoryState(); 
@@ -391,7 +384,9 @@ export default function Sidebar({ processImageFile }) {
 
           const currentFrames = useStore.getState().gifFrames;
           const lastSavedProgress = currentFrames.length > 0 ? currentFrames[currentFrames.length - 1].progress : -1;
-          const captureThreshold = 0.01; 
+          
+          // FIX: Lower threshold to ensure we catch all ~100 frames from the worker
+          const captureThreshold = 0.005; 
 
           if (progress - lastSavedProgress >= captureThreshold || type === 'FINISHED') {
             const MAX_GIF_HEIGHT = 1080;
@@ -435,6 +430,7 @@ export default function Sidebar({ processImageFile }) {
 
   return (
     <div className="w-80 h-screen bg-neutral-800 flex flex-col shrink-0 border-r border-neutral-700 shadow-xl overflow-y-auto">
+      {/* ... Header and Tabs ... */}
       <div className="p-4 flex justify-between items-center border-b border-neutral-700">
         <h1 className="text-lg font-bold tracking-wider text-neutral-100">TYPEWRITER STUDIO</h1>
         <div className="flex gap-1">
@@ -450,12 +446,13 @@ export default function Sidebar({ processImageFile }) {
       </div>
 
       <div className="flex-1 p-4 overflow-y-auto">
+        {/* ... General / Physics / Palette Tabs ... */}
         {activeTab === 'General' && (
           <div className="space-y-4">
             <ControlSlider label="Total Strokes" settingKey="totalStrokes" min={0} max={10000000} step={50000} />
             <ControlSlider label="Base Font Size" settingKey="fontSize" min={8} max={200} step={1} />
             <ControlSlider label="Density Focus" settingKey="densityWeight" min={1.0} max={10.0} step={0.5} />
-            <ControlSlider label="Gamma" settingKey="gamma" min={0.5} max={3.0} step={0.1} />
+            <ControlSlider label="Gamma" settingKey="gamma" min={0.1} max={3.0} step={0.1} />
             <div className="flex gap-2 mb-4">
               <div className="flex-1">
                 <label className="text-xs text-neutral-300 block mb-1">Output Scale</label>
@@ -486,6 +483,7 @@ export default function Sidebar({ processImageFile }) {
           </div>
         )}
 
+        {/* --- TOOLS FRAME --- */}
         <div className="mt-6 bg-neutral-900 p-3 rounded-lg border border-neutral-700">
           <div className="flex items-center justify-between mb-3 pb-2 border-b border-neutral-800">
             <div className="flex items-center text-xs text-neutral-400 font-bold uppercase tracking-wider">
@@ -634,19 +632,16 @@ export default function Sidebar({ processImageFile }) {
                         <input type="range" min="2" max="60" step="1" value={gifDuration} onChange={(e) => setGifDuration(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
                       </div>
                       
-                      {/* SHOW TARGET HEIGHT SLIDER ONLY IF NOT CROPPING */}
-                      {!cropRect && (
-                        <div>
-                          <div className="flex justify-between text-xs mb-1"><span className="text-neutral-300">Target Height (px)</span><span className="text-blue-400 font-mono">{gifTargetHeight}px</span></div>
-                          <input type="range" min="360" max="2160" step="120" value={gifTargetHeight} onChange={(e) => setGifTargetHeight(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
-                          <p className="text-[10px] text-neutral-500 mt-1">Output will scale to be exactly this tall.</p>
-                        </div>
-                      )}
+                      {/* ALWAYS SHOW TARGET HEIGHT SLIDER */}
+                      <div>
+                        <div className="flex justify-between text-xs mb-1"><span className="text-neutral-300">Target Height (px)</span><span className="text-blue-400 font-mono">{gifTargetHeight}px</span></div>
+                        <input type="range" min="360" max="2160" step="120" value={gifTargetHeight} onChange={(e) => setGifTargetHeight(parseInt(e.target.value))} className="w-full accent-blue-500 bg-neutral-700 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                        <p className="text-[10px] text-neutral-500 mt-1">Output will scale to be exactly this tall.</p>
+                      </div>
                       
-                      {/* IF CROPPING, SHOW NATIVE RES INDICATOR */}
                       {cropRect && (
                         <div className="p-2 bg-blue-900/30 border border-blue-800 rounded text-xs text-blue-200">
-                           <span className="font-bold">Crop Mode:</span> Using Native Resolution (1:1 Quality)
+                           <span className="font-bold">Crop Active:</span> Selected region will scale to {gifTargetHeight}px tall.
                         </div>
                       )}
 
